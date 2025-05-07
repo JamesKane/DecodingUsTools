@@ -64,7 +64,7 @@ impl ContigStats {
     fn process_position(
         &mut self,
         depth: u32,
-        alignments: &[rust_htslib::bam::pileup::Alignment],
+        alignments: &[bam::pileup::Alignment],
         pos: usize,
     ) {
         self.total_depth += depth as u64;
