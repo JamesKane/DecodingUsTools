@@ -1,6 +1,7 @@
-use rust_htslib::htslib::{BAM_FSUPPLEMENTARY, BAM_FSECONDARY};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use rust_htslib::htslib::{BAM_FSECONDARY, BAM_FSUPPLEMENTARY};
 use rust_htslib::{bam, bam::Read};
+use std::cmp::min;
 use std::convert::TryInto;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -25,10 +26,20 @@ struct ContigStats {
     primary_alignments: u64, // Add this field to track primary alignments
     stats: CallableStats,
     progress_bar: ProgressBar,
+    min_depth: u32,
+    max_depth: u32,
+    min_mapping_quality: u8,
 }
 
 impl ContigStats {
-    fn new(name: String, length: usize, multi_progress: &MultiProgress) -> Self {
+    fn new(
+        name: String,
+        length: usize,
+        multi_progress: &MultiProgress,
+        min_depth: u32,
+        max_depth: u32,
+        min_mapping_quality: u8,
+    ) -> Self {
         let progress_bar = multi_progress.add(ProgressBar::new(length as u64));
         progress_bar.set_style(ProgressStyle::default_bar()
             .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}")
@@ -45,6 +56,9 @@ impl ContigStats {
             primary_alignments: 0,
             stats: CallableStats::default(),
             progress_bar,
+            min_depth,
+            max_depth,
+            min_mapping_quality,
         }
     }
 
@@ -53,9 +67,6 @@ impl ContigStats {
         depth: u32,
         alignments: &[rust_htslib::bam::pileup::Alignment],
         pos: usize,
-        min_depth: u32,
-        max_depth: u32,
-        min_mapping_quality: u8,
     ) {
         self.total_depth += depth as u64;
 
@@ -64,8 +75,7 @@ impl ContigStats {
             .iter()
             .filter(|aln| {
                 let flag = aln.record().flags() as u32;
-                !(flag & BAM_FSECONDARY != 0 ||
-                    flag & BAM_FSUPPLEMENTARY != 0)
+                !(flag & BAM_FSECONDARY != 0 || flag & BAM_FSUPPLEMENTARY != 0)
             })
             .collect();
 
@@ -73,10 +83,8 @@ impl ContigStats {
         self.primary_alignments += primary_alns.len() as u64;
 
         // Calculate average mapping quality using only primary alignments
-        let mapping_qualities: Vec<u8> = primary_alns
-            .iter()
-            .map(|aln| aln.record().mapq())
-            .collect();
+        let mapping_qualities: Vec<u8> =
+            primary_alns.iter().map(|aln| aln.record().mapq()).collect();
 
         let mapq_sum: u32 = mapping_qualities.iter().map(|&q| q as u32).sum();
         let avg_mapq = if !mapping_qualities.is_empty() {
@@ -96,10 +104,10 @@ impl ContigStats {
         // Update callable statistics
         match depth {
             0 => self.stats.no_coverage += 1,
-            d if d <= min_depth => self.stats.low_coverage += 1,
-            d if d > max_depth => self.stats.excessive_coverage += 1,
+            d if d <= self.min_depth => self.stats.low_coverage += 1,
+            d if d > self.max_depth => self.stats.excessive_coverage += 1,
             _ => {
-                if avg_mapq < min_mapping_quality {
+                if avg_mapq < self.min_mapping_quality {
                     self.stats.poor_mapping_quality += 1;
                 } else {
                     self.stats.callable += 1;
@@ -197,21 +205,21 @@ pub fn run(
             }
 
             if let Some(&(_, length)) = contig_lengths.iter().find(|(name, _)| name == &ref_name) {
-                current_contig = Some(ContigStats::new(ref_name, length, &multi_progress));
+                current_contig = Some(ContigStats::new(
+                    ref_name,
+                    length,
+                    &multi_progress,
+                    min_depth,
+                    max_depth,
+                    min_mapping_quality,
+                ));
             }
         }
 
         if let Some(ref mut contig_stats) = current_contig {
             if pos < contig_stats.length {
                 let depth = pileup.depth();
-                contig_stats.process_position(
-                    depth,
-                    &pileup.alignments().collect::<Vec<_>>(),
-                    pos,
-                    min_depth,
-                    max_depth,
-                    min_mapping_quality,
-                );
+                contig_stats.process_position(depth, &pileup.alignments().collect::<Vec<_>>(), pos);
             }
         }
     }
