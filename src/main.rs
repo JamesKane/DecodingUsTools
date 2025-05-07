@@ -1,6 +1,8 @@
 use clap::Parser;
 use rust_htslib::{bam, bam::Read};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use std::fs::File;
+use std::io::{Write, BufWriter};
 
 /// Program to analyze BAM file callability
 #[derive(Parser)]
@@ -9,6 +11,10 @@ struct Args {
     /// Path to the BAM file
     #[arg(required = true)]
     bam_file: String,
+
+    /// Output file for the coverage report
+    #[arg(short = 'o', long = "output", default_value = "cov_report.txt")]
+    output_file: String,
 }
 
 // Define thresholds for callable regions
@@ -91,9 +97,7 @@ impl ContigStats {
         self.progress_bar.set_position(pos as u64);
     }
 
-    fn print_stats(&self) {
-        self.progress_bar.finish_with_message(format!("Completed {}", self.name));
-
+    fn format_report_line(&self) -> String {
         let total_bases = self.length as f64;
         let avg_depth = self.total_depth as f64 / total_bases;
         let avg_mapq = if self.mapq_count > 0 {
@@ -101,26 +105,41 @@ impl ContigStats {
         } else {
             0.0
         };
+        let coverage_percent = (self.stats.callable as f64 / total_bases) * 100.0;
 
-        println!("\nStats for {}", self.name);
-        println!("Length: {}", self.length);
-        println!("NO_COVERAGE: {:.2}% ({} bases)",
-                 (self.stats.no_coverage as f64 / total_bases) * 100.0, self.stats.no_coverage);
-        println!("LOW_COVERAGE: {:.2}% ({} bases)",
-                 (self.stats.low_coverage as f64 / total_bases) * 100.0, self.stats.low_coverage);
-        println!("EXCESSIVE_COVERAGE: {:.2}% ({} bases)",
-                 (self.stats.excessive_coverage as f64 / total_bases) * 100.0, self.stats.excessive_coverage);
-        println!("POOR_MAPPING_QUALITY: {:.2}% ({} bases)",
-                 (self.stats.poor_mapping_quality as f64 / total_bases) * 100.0, self.stats.poor_mapping_quality);
-        println!("CALLABLE: {:.2}% ({} bases)",
-                 (self.stats.callable as f64 / total_bases) * 100.0, self.stats.callable);
-        println!("Average depth: {:.2}X", avg_depth);
-        println!("Average mapping quality: {:.1}", avg_mapq);
+        format!("{}|1|{}|{}|{}|{}|{}|{}|{}|{:.2}|{:.2}|{:.1}",
+                self.name,
+                self.length,
+                self.mapq_count,
+                self.stats.no_coverage,
+                self.stats.low_coverage,
+                self.stats.excessive_coverage,
+                self.stats.poor_mapping_quality,
+                self.stats.callable,
+                coverage_percent,
+                avg_depth,
+                avg_mapq
+        )
     }
 }
 
 pub fn main() {
     let args = Args::parse();
+
+    // Open the output file
+    let output_file = match File::create(&args.output_file) {
+        Ok(file) => file,
+        Err(e) => {
+            eprintln!("Error creating output file '{}': {}", args.output_file, e);
+            std::process::exit(1);
+        }
+    };
+    let mut writer = BufWriter::new(output_file);
+
+    // Write the header
+    writeln!(writer, "{}",
+             "CONTIG|START_POS|END_POS|NUM_READS|NO_COV|LOW_COV|EXCESSIVE_COV|POOR_MQ|CALLABLE|COV_PERCENT|MEAN_DEPTH|MEAN_MQ"
+    ).unwrap();
 
     let mut bam = match bam::Reader::from_path(&args.bam_file) {
         Ok(reader) => reader,
@@ -164,7 +183,8 @@ pub fn main() {
         // If we've moved to a new contig, print the previous one's stats and start fresh
         if current_contig.as_ref().map_or(true, |c| c.name != ref_name) {
             if let Some(stats) = current_contig.take() {
-                stats.print_stats();
+                stats.progress_bar.finish_with_message(format!("Completed {}", stats.name));
+                writeln!(writer, "{}", stats.format_report_line()).unwrap();
             }
 
             if let Some(&(_, length)) = contig_lengths.iter().find(|(name, _)| name == &ref_name) {
@@ -187,7 +207,8 @@ pub fn main() {
 
     // Print stats for the last contig
     if let Some(stats) = current_contig {
-        stats.print_stats();
+        stats.progress_bar.finish_with_message(format!("Completed {}", stats.name));
+        writeln!(writer, "{}", stats.format_report_line()).unwrap();
     }
 
     // Wait for all progress bars to finish
