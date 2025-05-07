@@ -1,3 +1,4 @@
+use rust_htslib::htslib::{BAM_FSUPPLEMENTARY, BAM_FSECONDARY};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rust_htslib::{bam, bam::Read};
 use std::convert::TryInto;
@@ -5,11 +6,6 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 
 // TODO FIX-ME: This is SLOW!  Around 6-8 minutes per contig on hs1 aligned samples.
-
-// Define thresholds for callable regions
-const MIN_DEPTH: u32 = 10; // Minimum depth for callable regions
-const MAX_DEPTH: u32 = 250; // Maximum depth before considering excessive coverage
-const MIN_MAPPING_QUALITY: u8 = 20; // Minimum mapping quality for callable regions
 
 #[derive(Default)]
 struct CallableStats {
@@ -26,6 +22,7 @@ struct ContigStats {
     total_depth: u64,
     mapq_sum: u64,
     mapq_count: u64,
+    primary_alignments: u64, // Add this field to track primary alignments
     stats: CallableStats,
     progress_bar: ProgressBar,
 }
@@ -45,24 +42,51 @@ impl ContigStats {
             total_depth: 0,
             mapq_sum: 0,
             mapq_count: 0,
+            primary_alignments: 0,
             stats: CallableStats::default(),
             progress_bar,
         }
     }
 
-    fn process_position(&mut self, depth: u32, mapping_qualities: &[u8], pos: usize) {
+    fn process_position(
+        &mut self,
+        depth: u32,
+        alignments: &[rust_htslib::bam::pileup::Alignment],
+        pos: usize,
+        min_depth: u32,
+        max_depth: u32,
+        min_mapping_quality: u8,
+    ) {
         self.total_depth += depth as u64;
 
-        // Calculate average mapping quality for this position
+        // Count primary alignments and their mapping qualities
+        let primary_alns: Vec<_> = alignments
+            .iter()
+            .filter(|aln| {
+                let flag = aln.record().flags() as u32;
+                !(flag & BAM_FSECONDARY != 0 ||
+                    flag & BAM_FSUPPLEMENTARY != 0)
+            })
+            .collect();
+
+        // Update primary alignment count
+        self.primary_alignments += primary_alns.len() as u64;
+
+        // Calculate average mapping quality using only primary alignments
+        let mapping_qualities: Vec<u8> = primary_alns
+            .iter()
+            .map(|aln| aln.record().mapq())
+            .collect();
+
         let mapq_sum: u32 = mapping_qualities.iter().map(|&q| q as u32).sum();
-        let avg_mapq = if depth > 0 {
-            (mapq_sum / depth) as u8
+        let avg_mapq = if !mapping_qualities.is_empty() {
+            (mapq_sum / mapping_qualities.len() as u32) as u8
         } else {
             0
         };
 
-        // Update mapping quality statistics
-        for &mapq in mapping_qualities {
+        // Update mapping quality statistics for primary alignments only
+        for &mapq in &mapping_qualities {
             if mapq > 0 {
                 self.mapq_sum += mapq as u64;
                 self.mapq_count += 1;
@@ -72,10 +96,10 @@ impl ContigStats {
         // Update callable statistics
         match depth {
             0 => self.stats.no_coverage += 1,
-            1..=MIN_DEPTH => self.stats.low_coverage += 1,
-            d if d > MAX_DEPTH => self.stats.excessive_coverage += 1,
+            d if d <= min_depth => self.stats.low_coverage += 1,
+            d if d > max_depth => self.stats.excessive_coverage += 1,
             _ => {
-                if avg_mapq < MIN_MAPPING_QUALITY {
+                if avg_mapq < min_mapping_quality {
                     self.stats.poor_mapping_quality += 1;
                 } else {
                     self.stats.callable += 1;
@@ -100,7 +124,7 @@ impl ContigStats {
             "{}|1|{}|{}|{}|{}|{}|{}|{}|{:.2}|{:.2}|{:.1}",
             self.name,
             self.length,
-            self.mapq_count,
+            self.primary_alignments, // Use primary_alignments instead of mapq_count
             self.stats.no_coverage,
             self.stats.low_coverage,
             self.stats.excessive_coverage,
@@ -113,7 +137,13 @@ impl ContigStats {
     }
 }
 
-pub fn run(bam_file: String, output_file: String) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(
+    bam_file: String,
+    output_file: String,
+    min_depth: u32,
+    max_depth: u32,
+    min_mapping_quality: u8,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Open the output file
     let output_file = File::create(&output_file)?;
     let mut writer = BufWriter::new(output_file);
@@ -174,10 +204,14 @@ pub fn run(bam_file: String, output_file: String) -> Result<(), Box<dyn std::err
         if let Some(ref mut contig_stats) = current_contig {
             if pos < contig_stats.length {
                 let depth = pileup.depth();
-                let mapping_qualities: Vec<u8> =
-                    pileup.alignments().map(|aln| aln.record().mapq()).collect();
-
-                contig_stats.process_position(depth, &mapping_qualities, pos);
+                contig_stats.process_position(
+                    depth,
+                    &pileup.alignments().collect::<Vec<_>>(),
+                    pos,
+                    min_depth,
+                    max_depth,
+                    min_mapping_quality,
+                );
             }
         }
     }

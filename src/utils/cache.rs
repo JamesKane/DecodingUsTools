@@ -65,7 +65,6 @@ impl TreeCache {
         match fs::metadata(path) {
             Ok(metadata) => {
                 let modified = metadata.modified().ok();
-                let now = Local::now();
 
                 if let Some(modified) = modified {
                     if let Ok(modified) = modified.elapsed() {

@@ -17,6 +17,18 @@ pub enum Commands {
         /// Output file for the coverage report
         #[arg(short = 'o', long = "output", default_value = "cov_report.txt")]
         output_file: String,
+
+        /// Minimum depth for callable regions
+        #[arg(long, default_value = "10")]
+        min_depth: u32,
+
+        /// Maximum depth before considering excessive coverage
+        #[arg(long, default_value = "250")]
+        max_depth: u32,
+
+        /// Minimum mapping quality for callable regions
+        #[arg(long, default_value = "20")]
+        min_mapping_quality: u8,
     },
 
     /// Find closest Y-DNA branch for a sample (Requires hg38 aligned BAM.)

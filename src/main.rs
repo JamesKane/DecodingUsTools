@@ -12,7 +12,10 @@ fn main() {
         cli::Commands::Coverage {
             bam_file,
             output_file,
-        } => commands::coverage::run(bam_file, output_file),
+            min_depth,
+            max_depth,
+            min_mapping_quality,
+        } => commands::coverage::run(bam_file, output_file, min_depth, max_depth, min_mapping_quality),
         cli::Commands::FindYBranch {
             bam_file,
             output_file,
