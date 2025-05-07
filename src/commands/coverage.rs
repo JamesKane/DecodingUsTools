@@ -66,60 +66,54 @@ impl ContigStats {
     fn process_position(
         &mut self,
         depth: u32,
-        alignments: &[bam::pileup::Alignment],
+        alignments: bam::pileup::Alignments,
         ref_base: u8,
     ) {
         self.total_depth += depth as u64;
 
-        // Check if reference base is N
+        // Fast-path checks first
         if ref_base == b'N' || ref_base == b'n' {
             self.stats.ref_n += 1;
             return;
         }
+        if depth == 0 {
+            self.stats.no_coverage += 1;
+            return;
+        }
 
-        // Count primary alignments and their mapping qualities
-        let primary_alns: Vec<_> = alignments
-            .iter()
-            .filter(|aln| {
-                let flag = aln.record().flags() as u32;
-                !(flag & BAM_FSECONDARY != 0 || flag & BAM_FSUPPLEMENTARY != 0)
-            })
-            .collect();
+        // Process alignments directly from iterator
+        let mut primary_count = 0;
+        let mut mapq_sum: u32 = 0;
 
-        // Update primary alignment count
-        self.primary_alignments += primary_alns.len() as u64;
-
-        // Calculate average mapping quality using only primary alignments
-        let mapping_qualities: Vec<u8> =
-            primary_alns.iter().map(|aln| aln.record().mapq()).collect();
-
-        let mapq_sum: u32 = mapping_qualities.iter().map(|&q| q as u32).sum();
-        let avg_mapq = if !mapping_qualities.is_empty() {
-            (mapq_sum / mapping_qualities.len() as u32) as u8
-        } else {
-            0
-        };
-
-        // Update mapping quality statistics for primary alignments only
-        for &mapq in &mapping_qualities {
-            if mapq > 0 {
-                self.mapq_sum += mapq as u64;
-                self.mapq_count += 1;
+        for aln in alignments {
+            let flag = aln.record().flags() as u32;
+            if flag & (BAM_FSECONDARY | BAM_FSUPPLEMENTARY) == 0 {
+                primary_count += 1;
+                mapq_sum += aln.record().mapq() as u32;
             }
         }
 
-        // Update callable statistics
-        match depth {
-            0 => self.stats.no_coverage += 1,
-            d if d <= self.min_depth => self.stats.low_coverage += 1,
-            d if d > self.max_depth => self.stats.excessive_coverage += 1,
-            _ => {
-                if avg_mapq < self.min_mapping_quality {
-                    self.stats.poor_mapping_quality += 1;
-                } else {
-                    self.stats.callable += 1;
+        // Update statistics
+        self.primary_alignments += primary_count as u64;
+
+        if primary_count > 0 {
+            let avg_mapq = (mapq_sum / primary_count) as u8;
+            self.mapq_sum += mapq_sum as u64;
+            self.mapq_count += primary_count as u64;
+
+            match depth {
+                d if d <= self.min_depth => self.stats.low_coverage += 1,
+                d if d > self.max_depth => self.stats.excessive_coverage += 1,
+                _ => {
+                    if avg_mapq < self.min_mapping_quality {
+                        self.stats.poor_mapping_quality += 1;
+                    } else {
+                        self.stats.callable += 1;
+                    }
                 }
             }
+        } else {
+            self.stats.no_coverage += 1;
         }
     }
 
@@ -169,6 +163,7 @@ pub fn run(
     )?;
 
     let mut bam = bam::Reader::from_path(&bam_file)?;
+    bam.set_threads(4)?;
     let header = bam::Header::from_template(bam.header());
     let bam_header = bam.header().clone();
 
@@ -239,7 +234,7 @@ pub fn run(
                 };
                 contig_stats.process_position(
                     depth,
-                    &pileup.alignments().collect::<Vec<_>>(),
+                    pileup.alignments(),  // Pass iterator directly instead of collecting
                     ref_base,
                 );
                 contig_stats.progress_bar.set_position(pos as u64);
