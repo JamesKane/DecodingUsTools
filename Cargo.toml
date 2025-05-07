@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 rust-htslib = "0.49.0"
 clap = { version = "4.5", features = ["derive"] }
+indicatif = "0.17.11"
