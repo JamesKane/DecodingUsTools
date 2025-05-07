@@ -4,6 +4,8 @@ use rust_htslib::{bam, bam::Read};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
+// TODO FIX-ME: This is SLOW!  Around 6-8 minutes per contig on hs1 aligned samples.
+
 // Define thresholds for callable regions
 const MIN_DEPTH: u32 = 10; // Minimum depth for callable regions
 const MAX_DEPTH: u32 = 250; // Maximum depth before considering excessive coverage
