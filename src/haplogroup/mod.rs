@@ -1,10 +1,10 @@
+use crate::utils::cache::{TreeCache, TreeType};
 use indicatif::{ProgressBar, ProgressStyle};
 use rust_htslib::{bam, bam::Read};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use crate::utils::cache::{TreeCache, TreeType};
 
 #[derive(Deserialize, Debug)]
 pub struct Snp {
@@ -55,6 +55,9 @@ pub fn analyze_haplogroup(
             .unwrap(),
     );
 
+    let mut bam = bam::Reader::from_path(&bam_file)?;
+    validate_hg38_reference(&bam)?;
+
     // Get tree from cache
     let tree_cache = TreeCache::new(tree_type)?;
     let tree: Haplogroup = tree_cache.get_tree()?;
@@ -66,7 +69,6 @@ pub fn analyze_haplogroup(
     collect_snps(&tree, &mut positions);
 
     // Process BAM file
-    let mut bam = bam::Reader::from_path(&bam_file)?;
     let mut pileup = bam.pileup();
     pileup.set_max_depth(1000000);
 
@@ -148,7 +150,7 @@ fn is_valid_snp(snp: &Snp) -> bool {
     match snp.chromosome.as_str() {
         "MT" => true,
         "Y" => snp.build == "hg38",
-        _ => false
+        _ => false,
     }
 }
 
@@ -161,7 +163,11 @@ fn calculate_haplogroup_score(
     let mut matching_snps = 0;
     let mut ancestral_snps = 0;
     let mut called_snps = 0;
-    let valid_snps: Vec<_> = haplogroup.snps.iter().filter(|snp| is_valid_snp(snp)).collect();
+    let valid_snps: Vec<_> = haplogroup
+        .snps
+        .iter()
+        .filter(|snp| is_valid_snp(snp))
+        .collect();
     let total_snps = valid_snps.len();
 
     for snp in valid_snps {
@@ -218,4 +224,41 @@ fn calculate_haplogroup_score(
         has_excess_ancestral: child_result.has_excess_ancestral,
         previous_had_excess: has_excess_ancestral,
     }
+}
+
+fn validate_hg38_reference(bam: &bam::Reader) -> Result<(), Box<dyn std::error::Error>> {
+    let header_view = bam.header();
+
+    // Get sequence dictionary
+    let sequences: HashMap<&[u8], u64> = header_view
+        .target_names()
+        .iter()
+        .enumerate()
+        .filter_map(|(tid, name)| header_view.target_len(tid as u32).map(|len| (*name, len)))
+        .collect();
+
+    // Check chrY length
+    let chr_y_len = sequences
+        .get(&b"chrY"[..])
+        .ok_or("chrY not found in BAM header")?;
+    if *chr_y_len != 57227415 {
+        return Err("BAM file appears to not be aligned to hg38: chrY length mismatch".into());
+    }
+
+    // Check chrM length
+    let chr_m_len = sequences
+        .get(&b"chrM"[..])
+        .ok_or("chrM not found in BAM header")?;
+    if *chr_m_len != 16569 {
+        return Err("BAM file appears to not be aligned to hg38: chrM length mismatch".into());
+    }
+
+    // Check for presence of chrY_KI270740v1_random
+    if !sequences.contains_key(&b"chrY_KI270740v1_random"[..]) {
+        return Err(
+            "BAM file appears to not be aligned to hg38: missing chrY_KI270740v1_random".into(),
+        );
+    }
+
+    Ok(())
 }

@@ -19,7 +19,7 @@ pub enum Commands {
         output_file: String,
     },
 
-    /// Find closest Y-DNA branch for a sample
+    /// Find closest Y-DNA branch for a sample (Requires hg38 aligned BAM.)
     FindYBranch {
         /// Input BAM file
         bam_file: String,
@@ -33,7 +33,7 @@ pub enum Commands {
         min_quality: u8,
     },
 
-    /// Find closest MT-DNA branch for a sample
+    /// Find closest MT-DNA branch for a sample (Requires hg38 aligned BAM.)
     FindMtBranch {
         /// Input BAM file
         bam_file: String,
