@@ -1,6 +1,6 @@
-use std::convert::TryInto;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rust_htslib::{bam, bam::Read};
+use std::convert::TryInto;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
@@ -154,7 +154,7 @@ pub fn run(bam_file: String, output_file: String) -> Result<(), Box<dyn std::err
         let tid_u32: u32 = tid.try_into().unwrap();
         let ref_name = String::from_utf8(bam_header.tid2name(tid_u32).to_owned()).unwrap();
         let pos = pileup.pos() as usize;
-        
+
         // TODO: It would be cool to generate an SVG that plots a histogram of coverage depth for each contig
 
         // If we've moved to a new contig, print the previous one's stats and start fresh
@@ -166,9 +166,7 @@ pub fn run(bam_file: String, output_file: String) -> Result<(), Box<dyn std::err
                 writeln!(writer, "{}", stats.format_report_line()).unwrap();
             }
 
-            if let Some(&(_, length)) =
-                contig_lengths.iter().find(|(name, _)| name == &ref_name)
-            {
+            if let Some(&(_, length)) = contig_lengths.iter().find(|(name, _)| name == &ref_name) {
                 current_contig = Some(ContigStats::new(ref_name, length, &multi_progress));
             }
         }

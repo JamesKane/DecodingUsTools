@@ -1,7 +1,7 @@
 mod cli;
 mod commands;
-mod utils;
 mod haplogroup;
+mod utils;
 
 use clap::Parser;
 

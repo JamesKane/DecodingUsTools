@@ -7,5 +7,11 @@ pub fn run(
     min_depth: u32,
     min_quality: u8,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    haplogroup::analyze_haplogroup(bam_file, output_file, min_depth, min_quality, TreeType::MTDNA)
+    haplogroup::analyze_haplogroup(
+        bam_file,
+        output_file,
+        min_depth,
+        min_quality,
+        TreeType::MTDNA,
+    )
 }

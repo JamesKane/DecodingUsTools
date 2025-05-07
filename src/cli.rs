@@ -46,5 +46,4 @@ pub enum Commands {
         #[arg(long, default_value = "20")]
         min_quality: u8,
     },
-
 }

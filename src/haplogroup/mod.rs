@@ -56,7 +56,7 @@ pub fn analyze_haplogroup(
     );
 
     progress.set_message("Validating BAM reference genome...");
-    
+
     let mut bam = bam::Reader::from_path(&bam_file)?;
     validate_hg38_reference(&bam)?;
 
