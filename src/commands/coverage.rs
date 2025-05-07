@@ -1,8 +1,8 @@
-use std::collections::HashSet;
 use bio::io::fasta::IndexedReader;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rust_htslib::htslib::{BAM_FSECONDARY, BAM_FSUPPLEMENTARY};
 use rust_htslib::{bam, bam::Read};
+use std::collections::HashSet;
 use std::convert::TryInto;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -26,7 +26,7 @@ struct ContigStats {
     mapq_sum: u64,
     mapq_count: u64,
     total_base_coverage: u64,
-    unique_read_count: u64, 
+    unique_read_count: u64,
     seen_read_names: HashSet<Vec<u8>>,
     stats: CallableStats,
     progress_bar: ProgressBar,
@@ -125,7 +125,7 @@ impl ContigStats {
 
     fn format_report_line(&self) -> String {
         let total_bases = self.length as f64;
-        let avg_depth = self.total_depth as f64 / total_bases;
+        let avg_depth = self.total_depth as f64 / (total_bases - self.stats.ref_n as f64);
         let avg_mapq = if self.mapq_count > 0 {
             self.mapq_sum as f64 / self.mapq_count as f64
         } else {
