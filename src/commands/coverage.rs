@@ -6,7 +6,7 @@ use std::convert::TryInto;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
-// TODO FIX-ME: This is SLOW!  Around 6-8 minutes per contig on hs1 aligned samples.
+// TODO FIX-ME: This is still kinda slow.  About 2 minutes per contig in release mode
 
 #[derive(Default)]
 struct CallableStats {
