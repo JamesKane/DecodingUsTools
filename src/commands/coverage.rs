@@ -124,16 +124,15 @@ impl ContigStats {
     }
 
     fn format_report_line(&self) -> String {
-        let total_bases = self.length as f64;
-        let avg_depth = self.total_depth as f64 / (total_bases - self.stats.ref_n as f64);
+        let total_bases = (self.length - self.stats.ref_n) as f64;
+        let avg_depth = self.total_depth as f64 / total_bases;
         let avg_mapq = if self.mapq_count > 0 {
             self.mapq_sum as f64 / self.mapq_count as f64
         } else {
             0.0
         };
-        let coverage_percent = ((total_bases - (self.stats.no_coverage + self.stats.ref_n) as f64)
-            / total_bases)
-            * 100.0;
+        let coverage_percent =
+            ((total_bases - self.stats.no_coverage as f64) / total_bases) * 100.0;
 
         format!(
             "{}|1|{}|{}|{}|{}|{}|{}|{}|{}|{:.2}|{:.2}|{:.1}",
