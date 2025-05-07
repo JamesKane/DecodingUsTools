@@ -1,3 +1,4 @@
+use bio::io::fasta::IndexedReader;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rust_htslib::htslib::{BAM_FSECONDARY, BAM_FSUPPLEMENTARY};
 use rust_htslib::{bam, bam::Read};
@@ -29,14 +30,12 @@ struct ContigStats {
     min_depth: u32,
     max_depth: u32,
     min_mapping_quality: u8,
-    reference_sequence: Vec<u8>,
 }
 
 impl ContigStats {
     fn new(
         name: String,
         length: usize,
-        reference_sequence: Vec<u8>,
         multi_progress: &MultiProgress,
         min_depth: u32,
         max_depth: u32,
@@ -61,18 +60,20 @@ impl ContigStats {
             min_depth,
             max_depth,
             min_mapping_quality,
-            reference_sequence,
         }
     }
 
-    fn process_position(&mut self, depth: u32, alignments: &[bam::pileup::Alignment], pos: usize) {
+    fn process_position(
+        &mut self,
+        depth: u32,
+        alignments: &[bam::pileup::Alignment],
+        ref_base: u8,
+    ) {
         self.total_depth += depth as u64;
 
         // Check if reference base is N
-        if pos < self.reference_sequence.len() &&
-            (self.reference_sequence[pos] == b'N' || self.reference_sequence[pos] == b'n') {
+        if ref_base == b'N' || ref_base == b'n' {
             self.stats.ref_n += 1;
-            self.progress_bar.set_position(pos as u64);
             return;
         }
 
@@ -120,8 +121,6 @@ impl ContigStats {
                 }
             }
         }
-
-        self.progress_bar.set_position(pos as u64);
     }
 
     fn format_report_line(&self) -> String {
@@ -164,13 +163,6 @@ pub fn run(
     let output_file = File::create(&output_file)?;
     let mut writer = BufWriter::new(output_file);
 
-    let fasta = bio::io::fasta::Reader::from_file(&reference_file)?;
-    let mut ref_sequences = std::collections::HashMap::new();
-    for result in fasta.records() {
-        let record = result?;
-        ref_sequences.insert(record.id().to_string(), record.seq().to_vec());
-    }
-
     // Write the header
     writeln!(writer, "{}",
              "CONTIG|START_POS|END_POS|NUM_READS|REF_N|NO_COV|LOW_COV|EXCESSIVE_COV|POOR_MQ|CALLABLE|COV_PERCENT|MEAN_DEPTH|MEAN_MQ"
@@ -198,7 +190,10 @@ pub fn run(
     pileup.set_max_depth(1000000);
 
     let multi_progress = MultiProgress::new();
+
+    let mut fasta_reader = IndexedReader::from_file(&reference_file)?;
     let mut current_contig: Option<ContigStats> = None;
+    let mut current_seq = Vec::new();
 
     // Process pileups
     for p in pileup {
@@ -208,9 +203,7 @@ pub fn run(
         let ref_name = String::from_utf8(bam_header.tid2name(tid_u32).to_owned()).unwrap();
         let pos = pileup.pos() as usize;
 
-        // TODO: It would be cool to generate an SVG that plots a histogram of coverage depth for each contig
-
-        // If we've moved to a new contig, print the previous one's stats and start fresh
+        // If we've moved to a new contig
         if current_contig.as_ref().map_or(true, |c| c.name != ref_name) {
             if let Some(stats) = current_contig.take() {
                 stats
@@ -220,11 +213,14 @@ pub fn run(
             }
 
             if let Some(&(_, length)) = contig_lengths.iter().find(|(name, _)| name == &ref_name) {
-                let ref_seq = ref_sequences.get(&ref_name).cloned().unwrap_or_default();
+                // Read the sequence for the new contig
+                current_seq.clear();
+                fasta_reader.fetch(&ref_name, 0, length as u64)?;
+                fasta_reader.read(&mut current_seq)?;
+
                 current_contig = Some(ContigStats::new(
                     ref_name,
                     length,
-                    ref_seq,
                     &multi_progress,
                     min_depth,
                     max_depth,
@@ -236,7 +232,17 @@ pub fn run(
         if let Some(ref mut contig_stats) = current_contig {
             if pos < contig_stats.length {
                 let depth = pileup.depth();
-                contig_stats.process_position(depth, &pileup.alignments().collect::<Vec<_>>(), pos);
+                let ref_base = if pos < current_seq.len() {
+                    current_seq[pos]
+                } else {
+                    b'N'
+                };
+                contig_stats.process_position(
+                    depth,
+                    &pileup.alignments().collect::<Vec<_>>(),
+                    ref_base,
+                );
+                contig_stats.progress_bar.set_position(pos as u64);
             }
         }
     }
