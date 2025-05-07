@@ -18,4 +18,19 @@ pub enum Commands {
         #[arg(short = 'o', long = "output", default_value = "cov_report.txt")]
         output_file: String,
     },
+
+    /// Find closest Y-DNA branch for a sample
+    FindYBranch {
+        /// Input BAM file
+        bam_file: String,
+        /// Output file for haplogroup results
+        output_file: String,
+        /// Minimum read depth for SNP calling (default: 10)
+        #[arg(long, default_value = "10")]
+        min_depth: u32,
+        /// Minimum mapping quality (default: 20)
+        #[arg(long, default_value = "20")]
+        min_quality: u8,
+    },
+
 }
