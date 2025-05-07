@@ -1,7 +1,6 @@
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rust_htslib::htslib::{BAM_FSECONDARY, BAM_FSUPPLEMENTARY};
 use rust_htslib::{bam, bam::Read};
-use std::cmp::min;
 use std::convert::TryInto;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -132,7 +131,7 @@ impl ContigStats {
             "{}|1|{}|{}|{}|{}|{}|{}|{}|{:.2}|{:.2}|{:.1}",
             self.name,
             self.length,
-            self.primary_alignments, // Use primary_alignments instead of mapq_count
+            self.primary_alignments,
             self.stats.no_coverage,
             self.stats.low_coverage,
             self.stats.excessive_coverage,
