@@ -33,4 +33,18 @@ pub enum Commands {
         min_quality: u8,
     },
 
+    /// Find closest MT-DNA branch for a sample
+    FindMtBranch {
+        /// Input BAM file
+        bam_file: String,
+        /// Output file for haplogroup results
+        output_file: String,
+        /// Minimum read depth for SNP calling (default: 10)
+        #[arg(long, default_value = "10")]
+        min_depth: u32,
+        /// Minimum mapping quality (default: 20)
+        #[arg(long, default_value = "20")]
+        min_quality: u8,
+    },
+
 }

@@ -4,7 +4,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use crate::utils::cache::TreeCache;
+use crate::utils::cache::{TreeCache, TreeType};
 
 #[derive(Deserialize, Debug)]
 struct SNP {
@@ -40,7 +40,7 @@ pub fn run(
             .template("{spinner:.green} {msg}")
             .unwrap(),
     );
-    let tree_cache = TreeCache::new()?;
+    let tree_cache = TreeCache::new(TreeType::YDNA)?;
     let tree = tree_cache.get_tree()?;
 
     progress.set_message("Processing BAM file...");
