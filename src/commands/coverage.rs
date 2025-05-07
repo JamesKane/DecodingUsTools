@@ -154,6 +154,8 @@ pub fn run(bam_file: String, output_file: String) -> Result<(), Box<dyn std::err
         let tid_u32: u32 = tid.try_into().unwrap();
         let ref_name = String::from_utf8(bam_header.tid2name(tid_u32).to_owned()).unwrap();
         let pos = pileup.pos() as usize;
+        
+        // TODO: It would be cool to generate an SVG that plots a histogram of coverage depth for each contig
 
         // If we've moved to a new contig, print the previous one's stats and start fresh
         if current_contig.as_ref().map_or(true, |c| c.name != ref_name) {
