@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use bio::io::fasta::IndexedReader;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rust_htslib::htslib::{BAM_FSECONDARY, BAM_FSUPPLEMENTARY};
@@ -24,7 +25,9 @@ struct ContigStats {
     total_depth: u64,
     mapq_sum: u64,
     mapq_count: u64,
-    primary_alignments: u64, // Add this field to track primary alignments
+    total_base_coverage: u64,
+    unique_read_count: u64, 
+    seen_read_names: HashSet<Vec<u8>>,
     stats: CallableStats,
     progress_bar: ProgressBar,
     min_depth: u32,
@@ -54,7 +57,9 @@ impl ContigStats {
             total_depth: 0,
             mapq_sum: 0,
             mapq_count: 0,
-            primary_alignments: 0,
+            total_base_coverage: 0,
+            unique_read_count: 0,
+            seen_read_names: HashSet::new(),
             stats: CallableStats::default(),
             progress_bar,
             min_depth,
@@ -63,12 +68,7 @@ impl ContigStats {
         }
     }
 
-    fn process_position(
-        &mut self,
-        depth: u32,
-        alignments: bam::pileup::Alignments,
-        ref_base: u8,
-    ) {
+    fn process_position(&mut self, depth: u32, alignments: bam::pileup::Alignments, ref_base: u8) {
         self.total_depth += depth as u64;
 
         // Fast-path checks first
@@ -81,20 +81,26 @@ impl ContigStats {
             return;
         }
 
-        // Process alignments directly from iterator
         let mut primary_count = 0;
         let mut mapq_sum: u32 = 0;
 
         for aln in alignments {
-            let flag = aln.record().flags() as u32;
+            let record = aln.record();
+            let flag = record.flags() as u32;
             if flag & (BAM_FSECONDARY | BAM_FSUPPLEMENTARY) == 0 {
                 primary_count += 1;
-                mapq_sum += aln.record().mapq() as u32;
+                mapq_sum += record.mapq() as u32;
+
+                // Track unique reads
+                if !self.seen_read_names.contains(record.qname()) {
+                    self.seen_read_names.insert(record.qname().to_vec());
+                    self.unique_read_count += 1;
+                }
             }
         }
 
-        // Update statistics
-        self.primary_alignments += primary_count as u64;
+        // Update coverage statistics
+        self.total_base_coverage += primary_count as u64;
 
         if primary_count > 0 {
             let avg_mapq = (mapq_sum / primary_count) as u8;
@@ -125,13 +131,15 @@ impl ContigStats {
         } else {
             0.0
         };
-        let coverage_percent = (self.stats.callable as f64 / total_bases) * 100.0;
+        let coverage_percent = ((total_bases - (self.stats.no_coverage + self.stats.ref_n) as f64)
+            / total_bases)
+            * 100.0;
 
         format!(
             "{}|1|{}|{}|{}|{}|{}|{}|{}|{}|{:.2}|{:.2}|{:.1}",
             self.name,
             self.length,
-            self.primary_alignments,
+            self.unique_read_count,
             self.stats.ref_n,
             self.stats.no_coverage,
             self.stats.low_coverage,
@@ -234,7 +242,7 @@ pub fn run(
                 };
                 contig_stats.process_position(
                     depth,
-                    pileup.alignments(),  // Pass iterator directly instead of collecting
+                    pileup.alignments(), // Pass iterator directly instead of collecting
                     ref_base,
                 );
                 contig_stats.progress_bar.set_position(pos as u64);
