@@ -6,10 +6,10 @@ Disclaimer: This project is barely ALPHA release quality.  Use at your own risk!
 
 Usage: 
 ```shell
-decodingus-tools coverage <BAM_FILE> -o <cov_report.txt>
+decodingus-tools coverage -r <REFERENCE_FILE> <BAM_FILE> -o <cov_report.txt>
 ```
 
-Results in a coverage report for each contig in the BAM.
+Results in a coverage report for each contig in the BAM.  Requires the original reference
 
 ```shell
 decodingus-tools find-y-branch <BAM_FILE> <OUTPUT_FILE>

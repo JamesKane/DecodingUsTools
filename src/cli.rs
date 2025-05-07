@@ -14,6 +14,10 @@ pub enum Commands {
         /// Path to the BAM file
         bam_file: String,
 
+        /// Path to the reference FASTA file
+        #[arg(short = 'r', long = "reference")]
+        reference_file: String,
+
         /// Output file for the coverage report
         #[arg(short = 'o', long = "output", default_value = "cov_report.txt")]
         output_file: String,
@@ -23,7 +27,7 @@ pub enum Commands {
         min_depth: u32,
 
         /// Maximum depth before considering excessive coverage
-        #[arg(long, default_value = "250")]
+        #[arg(long, default_value_t = u32::MAX)]
         max_depth: u32,
 
         /// Minimum mapping quality for callable regions

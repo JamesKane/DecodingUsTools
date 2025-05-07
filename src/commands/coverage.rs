@@ -9,6 +9,7 @@ use std::io::{BufWriter, Write};
 
 #[derive(Default)]
 struct CallableStats {
+    ref_n: usize,
     no_coverage: usize,
     low_coverage: usize,
     excessive_coverage: usize,
@@ -28,12 +29,14 @@ struct ContigStats {
     min_depth: u32,
     max_depth: u32,
     min_mapping_quality: u8,
+    reference_sequence: Vec<u8>,
 }
 
 impl ContigStats {
     fn new(
         name: String,
         length: usize,
+        reference_sequence: Vec<u8>,
         multi_progress: &MultiProgress,
         min_depth: u32,
         max_depth: u32,
@@ -58,16 +61,20 @@ impl ContigStats {
             min_depth,
             max_depth,
             min_mapping_quality,
+            reference_sequence,
         }
     }
 
-    fn process_position(
-        &mut self,
-        depth: u32,
-        alignments: &[bam::pileup::Alignment],
-        pos: usize,
-    ) {
+    fn process_position(&mut self, depth: u32, alignments: &[bam::pileup::Alignment], pos: usize) {
         self.total_depth += depth as u64;
+
+        // Check if reference base is N
+        if pos < self.reference_sequence.len() &&
+            (self.reference_sequence[pos] == b'N' || self.reference_sequence[pos] == b'n') {
+            self.stats.ref_n += 1;
+            self.progress_bar.set_position(pos as u64);
+            return;
+        }
 
         // Count primary alignments and their mapping qualities
         let primary_alns: Vec<_> = alignments
@@ -128,10 +135,11 @@ impl ContigStats {
         let coverage_percent = (self.stats.callable as f64 / total_bases) * 100.0;
 
         format!(
-            "{}|1|{}|{}|{}|{}|{}|{}|{}|{:.2}|{:.2}|{:.1}",
+            "{}|1|{}|{}|{}|{}|{}|{}|{}|{}|{:.2}|{:.2}|{:.1}",
             self.name,
             self.length,
             self.primary_alignments,
+            self.stats.ref_n,
             self.stats.no_coverage,
             self.stats.low_coverage,
             self.stats.excessive_coverage,
@@ -146,6 +154,7 @@ impl ContigStats {
 
 pub fn run(
     bam_file: String,
+    reference_file: String,
     output_file: String,
     min_depth: u32,
     max_depth: u32,
@@ -155,9 +164,16 @@ pub fn run(
     let output_file = File::create(&output_file)?;
     let mut writer = BufWriter::new(output_file);
 
+    let fasta = bio::io::fasta::Reader::from_file(&reference_file)?;
+    let mut ref_sequences = std::collections::HashMap::new();
+    for result in fasta.records() {
+        let record = result?;
+        ref_sequences.insert(record.id().to_string(), record.seq().to_vec());
+    }
+
     // Write the header
     writeln!(writer, "{}",
-             "CONTIG|START_POS|END_POS|NUM_READS|NO_COV|LOW_COV|EXCESSIVE_COV|POOR_MQ|CALLABLE|COV_PERCENT|MEAN_DEPTH|MEAN_MQ"
+             "CONTIG|START_POS|END_POS|NUM_READS|REF_N|NO_COV|LOW_COV|EXCESSIVE_COV|POOR_MQ|CALLABLE|COV_PERCENT|MEAN_DEPTH|MEAN_MQ"
     )?;
 
     let mut bam = bam::Reader::from_path(&bam_file)?;
@@ -204,9 +220,11 @@ pub fn run(
             }
 
             if let Some(&(_, length)) = contig_lengths.iter().find(|(name, _)| name == &ref_name) {
+                let ref_seq = ref_sequences.get(&ref_name).cloned().unwrap_or_default();
                 current_contig = Some(ContigStats::new(
                     ref_name,
                     length,
+                    ref_seq,
                     &multi_progress,
                     min_depth,
                     max_depth,
