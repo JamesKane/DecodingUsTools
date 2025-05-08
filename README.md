@@ -9,7 +9,8 @@ Usage:
 decodingus-tools coverage -r <REFERENCE_FILE> <BAM_FILE> -o <cov_report.txt>
 ```
 
-Results in a coverage report for each contig in the BAM.  Requires the original reference
+Results in a coverage report for each contig in the BAM.  Requires the original reference.
+Intended to replace ```samtools coverage``` and ```gatk CallableLoci``` with a single tool.
 
 ```shell
 decodingus-tools find-y-branch <BAM_FILE> <OUTPUT_FILE>
