@@ -150,6 +150,9 @@ impl ContigStats {
 
 
         if primary_count > 0 {
+            self.mapq_sum += mapq_sum as u64;
+            self.mapq_count += primary_count as u64;
+            
             // Check for poor mapping quality using the new criteria
             if primary_count >= self.options.min_depth_for_low_mapq &&
                 (low_mapq_count as f64 / primary_count as f64) > self.options.max_low_mapq_fraction {
