@@ -5,10 +5,12 @@ mod utils;
 
 use clap::Parser;
 
-fn main() {
+use std::error::Error;
+
+fn main() -> Result<(), Box<dyn Error>> {
     let args = cli::Args::parse();
 
-    let result = match args.command {
+    match args.command {
         cli::Commands::Coverage {
             bam_file,
             reference_file,
@@ -16,30 +18,39 @@ fn main() {
             min_depth,
             max_depth,
             min_mapping_quality,
-        } => commands::coverage::run(
-            bam_file,
-            reference_file,
-            output_file,
-            min_depth,
-            max_depth,
-            min_mapping_quality,
-        ),
+            min_base_quality,
+            min_depth_for_low_mapq,
+            max_low_mapq,
+            max_low_mapq_fraction,
+        } => {
+            let options = commands::coverage::CallableOptions::new(
+                min_depth,
+                max_depth,
+                min_mapping_quality,
+                min_base_quality,
+                min_depth_for_low_mapq,
+                max_low_mapq,
+                max_low_mapq_fraction,
+            );
+            commands::coverage::run(bam_file, reference_file, output_file, options)?;
+        }
         cli::Commands::FindYBranch {
             bam_file,
             output_file,
             min_depth,
             min_quality,
-        } => commands::find_y_branch::run(bam_file, output_file, min_depth, min_quality),
+        } => {
+            commands::find_y_branch::run(bam_file, output_file, min_depth, min_quality)?;
+        }
         cli::Commands::FindMtBranch {
             bam_file,
             output_file,
             min_depth,
             min_quality,
-        } => commands::find_mt_branch::run(bam_file, output_file, min_depth, min_quality),
-    };
-
-    if let Err(e) = result {
-        eprintln!("Error: {}", e);
-        std::process::exit(1);
+        } => {
+            commands::find_mt_branch::run(bam_file, output_file, min_depth, min_quality)?;
+        }
     }
+
+    Ok(())
 }

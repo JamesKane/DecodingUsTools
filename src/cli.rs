@@ -23,7 +23,7 @@ pub enum Commands {
         output_file: String,
 
         /// Minimum depth for callable regions
-        #[arg(long, default_value = "10")]
+        #[arg(long, default_value = "4")]
         min_depth: u32,
 
         /// Maximum depth before considering excessive coverage
@@ -31,8 +31,24 @@ pub enum Commands {
         max_depth: u32,
 
         /// Minimum mapping quality for callable regions
-        #[arg(long, default_value = "20")]
+        #[arg(long, default_value = "10")]
         min_mapping_quality: u8,
+
+        /// Minimum base quality for callable regions
+        #[arg(long, default_value = "20")]
+        min_base_quality: u8,
+
+        /// Minimum depth before considering poor mapping quality
+        #[arg(long, default_value = "10")]
+        min_depth_for_low_mapq: u32,
+
+        /// Maximum MAPQ to be considered low quality
+        #[arg(long, default_value = "1")]
+        max_low_mapq: u8,
+
+        /// Maximum fraction of low MAPQ reads allowed
+        #[arg(long, default_value = "0.1")]
+        max_low_mapq_fraction: f64,
     },
 
     /// Find closest Y-DNA branch for a sample (Requires hg38 aligned BAM.)

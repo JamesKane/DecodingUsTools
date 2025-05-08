@@ -1,6 +1,6 @@
 use bio::io::fasta::IndexedReader;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use rust_htslib::htslib::{BAM_FSECONDARY, BAM_FSUPPLEMENTARY};
+use rust_htslib::htslib::{BAM_FSECONDARY, BAM_FSUPPLEMENTARY, BAM_FREAD1};
 use rust_htslib::{bam, bam::Read};
 use std::collections::HashSet;
 use std::convert::TryInto;
@@ -8,6 +8,39 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 
 // TODO FIX-ME: This is still kinda slow.  About 2 minutes per contig in release mode
+#[derive(Clone)]
+pub struct CallableOptions {
+    pub min_depth: u32,
+    pub max_depth: u32,
+    pub min_mapping_quality: u8,
+    pub min_base_quality: u8,
+    pub min_depth_for_low_mapq: u32,
+    pub max_low_mapq: u8,
+    pub max_low_mapq_fraction: f64,
+}
+
+impl CallableOptions {
+    pub fn new(
+        min_depth: u32,
+        max_depth: u32,
+        min_mapping_quality: u8,
+        min_base_quality: u8,
+        min_depth_for_low_mapq: u32,
+        max_low_mapq: u8,
+        max_low_mapq_fraction: f64,
+    ) -> Self {
+        Self {
+            min_depth,
+            max_depth,
+            min_mapping_quality,
+            min_base_quality,
+            min_depth_for_low_mapq,
+            max_low_mapq,
+            max_low_mapq_fraction,
+        }
+    }
+}
+
 
 #[derive(Default)]
 struct CallableStats {
@@ -30,9 +63,7 @@ struct ContigStats {
     seen_read_names: HashSet<Vec<u8>>,
     stats: CallableStats,
     progress_bar: ProgressBar,
-    min_depth: u32,
-    max_depth: u32,
-    min_mapping_quality: u8,
+    options: CallableOptions,
 }
 
 impl ContigStats {
@@ -40,9 +71,7 @@ impl ContigStats {
         name: String,
         length: usize,
         multi_progress: &MultiProgress,
-        min_depth: u32,
-        max_depth: u32,
-        min_mapping_quality: u8,
+        options: CallableOptions,
     ) -> Self {
         let progress_bar = multi_progress.add(ProgressBar::new(length as u64));
         progress_bar.set_style(ProgressStyle::default_bar()
@@ -62,9 +91,7 @@ impl ContigStats {
             seen_read_names: HashSet::new(),
             stats: CallableStats::default(),
             progress_bar,
-            min_depth,
-            max_depth,
-            min_mapping_quality,
+            options,
         }
     }
 
@@ -82,6 +109,8 @@ impl ContigStats {
         }
 
         let mut primary_count = 0;
+        let mut qc_depth = 0;
+        let mut low_mapq_count = 0;
         let mut mapq_sum: u32 = 0;
 
         for aln in alignments {
@@ -89,11 +118,28 @@ impl ContigStats {
             let flag = record.flags() as u32;
             if flag & (BAM_FSECONDARY | BAM_FSUPPLEMENTARY) == 0 {
                 primary_count += 1;
-                mapq_sum += record.mapq() as u32;
+                let mapq = record.mapq();
+                mapq_sum += mapq as u32;
+
+                // Count reads with low MAPQ
+                if mapq <= self.options.max_low_mapq {
+                    low_mapq_count += 1;
+                }
+
+                // Count bases that pass both mapping and base quality thresholds
+                if mapq >= self.options.min_mapping_quality {
+                    if let Some(qual) = aln.qpos().and_then(|q| record.qual().get(q)) {
+                        if *qual >= self.options.min_base_quality {
+                            qc_depth += 1;
+                        }
+                    }
+                }
 
                 // Track unique reads
-                if !self.seen_read_names.contains(record.qname()) {
-                    self.seen_read_names.insert(record.qname().to_vec());
+                let mut key = record.qname().to_vec();
+                key.push(if flag & BAM_FREAD1 != 0 { b'1' } else { b'2' });
+                if !self.seen_read_names.contains(&key) {
+                    self.seen_read_names.insert(key);
                     self.unique_read_count += 1;
                 }
             }
@@ -102,25 +148,24 @@ impl ContigStats {
         // Update coverage statistics
         self.total_base_coverage += primary_count as u64;
 
-        if primary_count > 0 {
-            let avg_mapq = (mapq_sum / primary_count) as u8;
-            self.mapq_sum += mapq_sum as u64;
-            self.mapq_count += primary_count as u64;
 
-            match depth {
-                d if d <= self.min_depth => self.stats.low_coverage += 1,
-                d if d > self.max_depth => self.stats.excessive_coverage += 1,
-                _ => {
-                    if avg_mapq < self.min_mapping_quality {
-                        self.stats.poor_mapping_quality += 1;
-                    } else {
-                        self.stats.callable += 1;
-                    }
-                }
+        if primary_count > 0 {
+            // Check for poor mapping quality using the new criteria
+            if primary_count >= self.options.min_depth_for_low_mapq &&
+                (low_mapq_count as f64 / primary_count as f64) > self.options.max_low_mapq_fraction {
+                self.stats.poor_mapping_quality += 1;
+                return;
+            }
+
+            match qc_depth {
+                d if d < self.options.min_depth => self.stats.low_coverage += 1,
+                d if d > self.options.max_depth => self.stats.excessive_coverage += 1,
+                _ => self.stats.callable += 1,
             }
         } else {
             self.stats.no_coverage += 1;
         }
+
     }
 
     fn format_report_line(&self) -> String {
@@ -156,9 +201,7 @@ pub fn run(
     bam_file: String,
     reference_file: String,
     output_file: String,
-    min_depth: u32,
-    max_depth: u32,
-    min_mapping_quality: u8,
+    options: CallableOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Open the output file
     let output_file = File::create(&output_file)?;
@@ -224,9 +267,7 @@ pub fn run(
                     ref_name,
                     length,
                     &multi_progress,
-                    min_depth,
-                    max_depth,
-                    min_mapping_quality,
+                    options.clone(),
                 ));
             }
         }
