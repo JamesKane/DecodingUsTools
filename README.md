@@ -4,6 +4,16 @@ A suite of future tools intended to be used with the main [DecodingUs](https://g
 
 Disclaimer: This project is barely ALPHA release quality.  Use at your own risk!
 
+## Installation
+```shell
+git clone https://github.com/JamesKane/DecodingUsTools.git
+cd DecodingUsTools
+cargo build --release
+```
+
+After building, the binary will be in target/release/decodingus-tools.  Add this directory to your PATH or 
+copy the binary to a location already in your PATH.
+
 Usage: 
 ```shell
 decodingus-tools coverage --reference <REFERENCE_FILE> <BAM_FILE> -o <cov_report.txt>
