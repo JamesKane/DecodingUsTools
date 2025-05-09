@@ -6,6 +6,13 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
+macro_rules! debug_println {
+    ($($arg:tt)*) => {
+        #[cfg(debug_assertions)]
+        println!($($arg)*);
+    };
+}
+
 #[derive(Deserialize, Debug)]
 pub struct Variant {
     variant: String,
@@ -36,7 +43,6 @@ struct RawVariant {
     #[serde(rename = "snpId", default)]
     snp_id: Option<u32>,
 }
-
 
 // Deal with incoherent variants in FTDNA's tree
 impl TryFrom<RawVariant> for Variant {
@@ -76,7 +82,6 @@ impl Variant {
         })
     }
 }
-
 
 #[derive(Deserialize, Debug)]
 pub struct HaplogroupNode {
@@ -150,7 +155,8 @@ where
     temp_map
         .into_iter()
         .map(|(k, v)| {
-            let variants = v.variants
+            let variants = v
+                .variants
                 .into_iter()
                 .filter_map(|raw| Variant::try_from(raw).ok())
                 .collect();
@@ -172,7 +178,6 @@ where
         .collect()
 }
 
-
 impl HaplogroupTree {
     fn build_tree(&self, node_id: u32, tree_type: TreeType) -> Option<Haplogroup> {
         let node = self.all_nodes.get(&node_id.to_string())?;
@@ -185,7 +190,8 @@ impl HaplogroupTree {
             None
         };
 
-        let snps = node.variants
+        let snps = node
+            .variants
             .iter()
             .filter_map(|v| v.to_snp(tree_type))
             .collect();
@@ -216,9 +222,12 @@ pub struct Snp {
     build: String,
 }
 
-struct BranchResult {
-    has_excess_ancestral: bool,
-    previous_had_excess: bool,
+#[derive(Debug, Clone, Default, PartialEq, PartialOrd)]
+struct HaplogroupScore {
+    matches: u32,
+    mismatches: u32,
+    total_snps: u32,
+    score: f64,
 }
 
 pub fn analyze_haplogroup(
@@ -245,7 +254,11 @@ pub fn analyze_haplogroup(
     let tree_cache = TreeCache::new(tree_type)?;
     let tree_json: HaplogroupTree = tree_cache.get_tree()?;
 
-    let root_count = tree_json.all_nodes.values().filter(|node| node.parent_id == 0).count();
+    let root_count = tree_json
+        .all_nodes
+        .values()
+        .filter(|node| node.parent_id == 0)
+        .count();
     if root_count > 1 {
         return Err("Multiple root nodes found in tree".into());
     }
@@ -331,13 +344,14 @@ pub fn analyze_haplogroup(
 
     // Score haplogroups
     let mut scores = Vec::new();
-    calculate_haplogroup_score(&tree, &snp_calls, &mut scores, false);
+    calculate_haplogroup_score(&tree, &snp_calls, &mut scores, None);
 
     // Sort and write results
     scores.sort_by(|a, b| {
         let score_diff = b.1.partial_cmp(&a.1).unwrap();
         if (b.1 - a.1).abs() < 0.1 {
-            b.3.cmp(&a.3)
+            // If scores are very close, compare by number of matching SNPs
+            b.2.cmp(&a.2)
         } else {
             score_diff
         }
@@ -404,10 +418,16 @@ fn collect_snps<'a>(
     haplogroup: &'a Haplogroup,
     positions: &mut HashMap<u32, Vec<(&'a str, &'a Snp)>>,
 ) {
-    println!("Processing haplogroup: {} with {} SNPs", haplogroup.name, haplogroup.snps.len());
+    debug_println!(
+        "Processing haplogroup: {} with {} SNPs",
+        haplogroup.name,
+        haplogroup.snps.len()
+    );
     for snp in &haplogroup.snps {
-        println!("  SNP at pos {}: ancestral={}, derived={}, chrom={}, build={}",
-                 snp.position, snp.ancestral, snp.derived, snp.chromosome, snp.build);
+        debug_println!(
+            "  SNP at pos {}: ancestral={}, derived={}, chrom={}, build={}",
+            snp.position, snp.ancestral, snp.derived, snp.chromosome, snp.build
+        );
 
         if is_valid_snp(snp) {
             positions
@@ -415,8 +435,10 @@ fn collect_snps<'a>(
                 .or_default()
                 .push((&haplogroup.name, snp));
         } else {
-            println!("  Invalid SNP: pos={}, chrom={}, build={}",
-                     snp.position, snp.chromosome, snp.build);
+            debug_println!(
+                "  Invalid SNP: pos={}, chrom={}, build={}",
+                snp.position, snp.chromosome, snp.build
+            );
         }
     }
 
@@ -437,78 +459,50 @@ fn calculate_haplogroup_score(
     haplogroup: &Haplogroup,
     snp_calls: &HashMap<u32, (char, u32, f64)>,
     scores: &mut Vec<(String, f64, u32, u32)>,
-    previous_had_excess: bool,
-) -> BranchResult {
-    let mut matching_snps = 0;
-    let mut ancestral_snps = 0;
-    let mut called_snps = 0;
-    let valid_snps: Vec<_> = haplogroup
-        .snps
-        .iter()
-        .filter(|snp| is_valid_snp(snp))
-        .collect();
-    let total_snps = valid_snps.len();
+    parent_score: Option<HaplogroupScore>,
+) -> HaplogroupScore {
+    // Start with parent scores if they exist, or create new score
+    let mut current_score = parent_score.unwrap_or_default();
 
-    println!("Scoring haplogroup: {} (total SNPs: {})", haplogroup.name, total_snps);
+    // Add current haplogroup's SNPs to the score
+    let valid_snps: Vec<_> = haplogroup.snps.iter().filter(|snp| is_valid_snp(snp)).collect();
 
-    for snp in valid_snps {
-        if let Some((called_base, depth, freq)) = snp_calls.get(&snp.position) {
-            called_snps += 1;
-            println!("Position {}: called={}, ancestral={}, derived={} (depth={}, freq={})",
-                     snp.position, called_base, snp.ancestral, snp.derived, depth, freq);
+    for snp in valid_snps.iter() {
+        if let Some((called_base, _depth, _freq)) = snp_calls.get(&snp.position) {
+            current_score.total_snps += 1;
 
             if *called_base == snp.derived.chars().next().unwrap() {
-                matching_snps += 1;
-            } else if *called_base == snp.ancestral.chars().next().unwrap() {
-                ancestral_snps += 1;
+                current_score.matches += 1;
+            } else {
+                current_score.mismatches += 1;
             }
         }
     }
 
-    let score = if total_snps > 0 {
-        matching_snps as f64 / total_snps as f64
+    // Calculate score
+    let score = if current_score.total_snps > 0 {
+        current_score.matches as f64 / current_score.total_snps as f64
     } else {
         0.0
     };
+    current_score.score = score;
 
+    // Store result in simple format expected by existing code
     scores.push((
         haplogroup.name.clone(),
         score,
-        matching_snps,
-        total_snps as u32,
+        current_score.matches,
+        current_score.total_snps,
     ));
 
-    let has_excess_ancestral = if called_snps > 0 {
-        let ancestral_ratio = ancestral_snps as f64 / called_snps as f64;
-        ancestral_ratio > 0.2
-    } else {
-        false
-    };
-
-    if has_excess_ancestral && previous_had_excess {
-        return BranchResult {
-            has_excess_ancestral: true,
-            previous_had_excess: true,
-        };
-    }
-
-    let mut child_result = BranchResult {
-        has_excess_ancestral: false,
-        previous_had_excess: false,
-    };
-
+    // Process children with current scores as their parent score
     for child in &haplogroup.children {
-        child_result = calculate_haplogroup_score(child, snp_calls, scores, has_excess_ancestral);
-        if child_result.has_excess_ancestral && child_result.previous_had_excess {
-            break;
-        }
+        calculate_haplogroup_score(child, snp_calls, scores, Some(current_score.clone()));
     }
 
-    BranchResult {
-        has_excess_ancestral: child_result.has_excess_ancestral,
-        previous_had_excess: has_excess_ancestral,
-    }
+    current_score
 }
+
 
 fn validate_hg38_reference<R: Read>(bam: &R) -> Result<(), Box<dyn std::error::Error>> {
     let header = bam.header();
