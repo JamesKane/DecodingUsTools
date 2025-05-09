@@ -108,7 +108,11 @@ impl TreeCache {
             }
         ));
 
-        let tree_json = reqwest::blocking::get(self.tree_type.url())?.text()?;
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))  // 5 minute timeout
+            .build()?;
+        let tree_json = client.get(self.tree_type.url()).send()?.text()?;
+
         fs::write(&cache_path, &tree_json)?;
 
         progress.finish_with_message(format!(
