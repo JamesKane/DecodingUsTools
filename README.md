@@ -6,20 +6,20 @@ Disclaimer: This project is barely ALPHA release quality.  Use at your own risk!
 
 Usage: 
 ```shell
-decodingus-tools coverage -r <REFERENCE_FILE> <BAM_FILE> -o <cov_report.txt>
+decodingus-tools coverage --reference <REFERENCE_FILE> <BAM_FILE> -o <cov_report.txt>
 ```
 
 Results in a coverage report for each contig in the BAM.  Requires the original reference.
 Intended to replace ```samtools coverage``` and ```gatk CallableLoci``` with a single tool.
 
 ```shell
-decodingus-tools find-y-branch <BAM_FILE> <OUTPUT_FILE>
+decodingus-tools find-y-branch --reference <REFERENCE_FILE> <BAM_FILE> <OUTPUT_FILE>
 ```
 
 Find the closest YDNA branch
 
 ```shell
-decodingus-tools find-mt-branch <BAM_FILE> <OUTPUT_FILE>
+decodingus-tools find-mt-branch --reference <REFERENCE_FILE> <BAM_FILE> <OUTPUT_FILE>
 ```
 
 Find the closest mtDNA branch
