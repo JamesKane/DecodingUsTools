@@ -7,8 +7,108 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 
 #[derive(Deserialize, Debug)]
+pub struct Variant {
+    variant: String,
+    #[serde(default)]
+    pos: u32,
+    #[serde(default)]
+    ancestral: String,
+    #[serde(default)]
+    derived: String,
+    #[serde(default)]
+    region: String,
+    #[serde(rename = "snpId", default)]
+    snp_id: u32,
+}
+
+impl Variant {
+    fn to_snp(&self) -> Option<Snp> {
+        // Only convert variants that have all required fields
+        if self.variant.is_empty() || self.ancestral.is_empty() || self.derived.is_empty() {
+            return None;
+        }
+
+        Some(Snp {
+            position: self.pos,
+            ancestral: self.ancestral.clone(),
+            derived: self.derived.clone(),
+            chromosome: default_chromosome(),
+            build: default_build(),
+        })
+    }
+}
+
+#[derive(Deserialize, Debug)]
+pub struct HaplogroupNode {
+    #[serde(rename = "haplogroupId")]
+    haplogroup_id: u32,
+    #[serde(rename = "parentId")]
+    parent_id: u32,
+    name: String,
+    #[serde(rename = "isRoot")]
+    is_root: bool,
+    root: String,
+    #[serde(rename = "kitsCount")]
+    kits_count: u32,
+    #[serde(rename = "subBranches")]
+    sub_branches: u32,
+    #[serde(rename = "bigYCount")]
+    big_y_count: u32,
+    #[serde(default)]
+    variants: Vec<Variant>,
+    #[serde(default)]
+    children: Vec<u32>,
+}
+
+
+#[derive(Deserialize, Debug)]
+pub struct HaplogroupTree {
+    #[serde(rename = "allNodes")]
+    all_nodes: HashMap<String, HaplogroupNode>,
+}
+
+
+#[derive(Debug)]
+pub struct Haplogroup {
+    name: String,
+    parent: Option<String>,
+    snps: Vec<Snp>,
+    children: Vec<Haplogroup>,
+}
+
+impl HaplogroupTree {
+    fn build_tree(&self, node_id: u32) -> Option<Haplogroup> {
+        let node = self.all_nodes.get(&node_id.to_string())?;
+
+        let parent = if node.parent_id != 0 {
+            self.all_nodes
+                .get(&node.parent_id.to_string())
+                .map(|p| p.name.clone())
+        } else {
+            None
+        };
+
+        let snps = node.variants
+            .iter()
+            .filter_map(|v| v.to_snp())
+            .collect();
+
+        let children = node.children
+            .iter()
+            .filter_map(|&child_id| self.build_tree(child_id))
+            .collect();
+
+        Some(Haplogroup {
+            name: node.name.clone(),
+            parent,
+            snps,
+            children,
+        })
+    }
+}
+
+#[derive(Deserialize, Debug)]
 pub struct Snp {
-    #[serde(alias = "pos")]
     position: u32,
     ancestral: String,
     derived: String,
@@ -24,16 +124,6 @@ fn default_chromosome() -> String {
 
 fn default_build() -> String {
     "rCRS".to_string()
-}
-
-#[derive(Deserialize, Debug)]
-pub struct Haplogroup {
-    name: String,
-    #[serde(default)]
-    parent: Option<String>,
-    snps: Vec<Snp>,
-    #[serde(default)]
-    children: Vec<Haplogroup>,
 }
 
 struct BranchResult {
@@ -62,7 +152,17 @@ pub fn analyze_haplogroup(
 
     // Get tree from cache
     let tree_cache = TreeCache::new(tree_type)?;
-    let tree: Haplogroup = tree_cache.get_tree()?;
+    let tree_json: HaplogroupTree = tree_cache.get_tree()?;
+
+    // Find the root node (usually has parent_id = 0)
+    let root_node = tree_json.all_nodes
+        .values()
+        .find(|node| node.is_root)
+        .ok_or("No root node found")?;
+
+    // Build the tree structure starting from root
+    let tree = tree_json.build_tree(root_node.haplogroup_id)
+        .ok_or("Failed to build tree")?;
 
     progress.set_message("Processing BAM file...");
 
