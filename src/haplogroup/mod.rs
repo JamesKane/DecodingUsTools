@@ -6,7 +6,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
-
 const BAM_CMATCH: u32 = 0;
 const BAM_CINS: u32 = 1;
 const BAM_CDEL: u32 = 2;
@@ -14,7 +13,6 @@ const BAM_CREF_SKIP: u32 = 3;
 const BAM_CSOFT_CLIP: u32 = 4;
 const BAM_CEQUAL: u32 = 7;
 const BAM_CDIFF: u32 = 8;
-
 
 macro_rules! debug_println {
     ($($arg:tt)*) => {
@@ -449,7 +447,6 @@ fn process_region<R: Read>(
     snp_calls: &mut HashMap<u32, (char, u32, f64)>,
     progress: &ProgressBar,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let debug_positions = HashSet::from([2968390u32, 15773697u32]);
     let mut coverage: HashMap<u32, Vec<u8>> = HashMap::new();
 
     for r in bam.records() {
@@ -471,48 +468,35 @@ fn process_region<R: Read>(
                     'M' | '=' | 'X' => {
                         let len = op.len() as usize;
                         for i in 0..len {
-                            // Add 1 to ref_pos when checking positions HashMap (1-based) but use original for FASTA
                             let vcf_pos = ref_pos + 1;
                             if positions.contains_key(&vcf_pos) && read_pos + i < sequence.len() {
                                 let base_index = read_pos + i;
                                 let base = sequence[base_index].to_ascii_uppercase();
 
-                                if let Ok(_) = fasta.fetch(&ref_name, ref_pos as u64, (ref_pos + 1) as u64) {
+                                if let Ok(_) =
+                                    fasta.fetch(&ref_name, ref_pos as u64, (ref_pos + 1) as u64)
+                                {
                                     let mut ref_seq = Vec::new();
                                     fasta.read(&mut ref_seq)?;
-                                    let ref_base = ref_seq.first().map(|&b| b.to_ascii_uppercase()).unwrap_or(b'N');
-
-                                    if debug_positions.contains(&vcf_pos) {
-                                        println!("DEBUG: Full read info for position {}:", vcf_pos);
-                                        println!("  Read name: {}", String::from_utf8_lossy(record.qname()));
-                                        println!("  Is reverse complemented: {}", record.is_reverse());
-                                        println!("  Reference base: {}", char::from(ref_base));
-                                        println!("  Base: {}", char::from(base));
-                                        if let Some(snp_info) = positions.get(&vcf_pos) {
-                                            for (_, snp) in snp_info {
-                                                println!("  Expected mutation: {} -> {}", snp.ancestral, snp.derived);
-                                            }
-                                        }
-                                    }
-
-                                    coverage.entry(vcf_pos)
-                                        .or_default()
-                                        .push(base);
+                                    coverage.entry(vcf_pos).or_default().push(base);
                                 }
                             }
                             ref_pos += 1;
                         }
                         read_pos += len;
                     }
-                    'D' | 'N' => { ref_pos += op.len() as u32; }
-                    'I' | 'S' => { read_pos += op.len() as usize; }
+                    'D' | 'N' => {
+                        ref_pos += op.len() as u32;
+                    }
+                    'I' | 'S' => {
+                        read_pos += op.len() as usize;
+                    }
                     _ => {}
                 }
             }
         }
     }
 
-    // Rest of the function remains the same
     for (pos, bases) in coverage {
         if bases.len() >= min_depth as usize {
             let mut base_counts: HashMap<char, u32> = HashMap::new();
@@ -526,12 +510,6 @@ fn process_region<R: Read>(
                 let freq = count as f64 / total as f64;
 
                 if freq >= 0.7 {
-                    if debug_positions.contains(&pos) {
-                        println!("DEBUG: Position {} - Final consensus call:", pos);
-                        println!("  Called base: {} (frequency: {:.2})", base, freq);
-                        println!("  Base counts: {:?}", base_counts);
-                        println!("  Total reads: {}", total);
-                    }
                     snp_calls.insert(pos, (base, total, freq));
                 }
             }
@@ -540,6 +518,7 @@ fn process_region<R: Read>(
 
     Ok(())
 }
+
 fn collect_snps<'a>(
     haplogroup: &'a Haplogroup,
     positions: &mut HashMap<u32, Vec<(&'a str, &'a Snp)>>,
@@ -594,19 +573,12 @@ fn calculate_haplogroup_score(
     parent_score: Option<HaplogroupScore>,
     consecutive_all_negative: u32,
 ) -> HaplogroupScore {
-    // Initialize a fresh score for this branch
     let mut current_score = HaplogroupScore::default();
     current_score.depth = parent_score.map_or(0, |p| p.depth + 1);
 
-
-    let is_target = haplogroup.name.contains("P310") ||
-        haplogroup.name.contains("L21") ||
-        haplogroup.name.contains("DF13") ||
-        haplogroup.name.contains("L151") ||  // Add immediate downstream from P310
-        haplogroup.name.contains("P312");    // Add immediate downstream from P310
-
-    // Count defining SNPs for this branch
-    let defining_snps: Vec<_> = haplogroup.snps.iter()
+    let defining_snps: Vec<_> = haplogroup
+        .snps
+        .iter()
         .filter(|snp| is_valid_snp(snp))
         .collect();
 
@@ -615,13 +587,13 @@ fn calculate_haplogroup_score(
     let mut branch_no_calls = 0;
     let mut branch_low_quality = 0;
 
+    let is_target = haplogroup.name.contains("FGC29071") || haplogroup.name.contains("FGC29067");
 
     if is_target {
-        println!("\n=== Analyzing branch {} ===", haplogroup.name);
-        println!("Number of defining SNPs: {}", defining_snps.len());
+        println!("\nAnalyzing target branch: {}", haplogroup.name);
     }
 
-    // Process defining SNPs checking specifically for derived mutations
+    // Process defining SNPs
     for snp in &defining_snps {
         if let Some((called_base, depth, freq)) = snp_calls.get(&snp.position) {
             if *depth >= 4 {
@@ -629,121 +601,147 @@ fn calculate_haplogroup_score(
                 let ancestral_base = snp.ancestral.chars().next().unwrap();
 
                 if is_target {
-                    print!("SNP at {}: ancestral={} derived={} called={} depth={} freq={:.2}",
-                           snp.position, ancestral_base, derived_base, called_base, depth, freq);
+                    println!(
+                        "SNP at {}: called={} (depth={}, freq={:.2}) derived={} ancestral={}",
+                        snp.position, called_base, depth, freq, derived_base, ancestral_base
+                    );
                 }
 
                 if *called_base == derived_base {
-                    // Exact derived match
-                    if *freq >= 0.9 {
+                    if *freq >= 0.7 {
                         branch_derived += 1;
                         if is_target {
-                            println!(" → HIGH confidence derived");
+                            println!("  → Derived match (high confidence)");
                         }
-                    } else if *freq >= 0.7 {
+                    } else if *freq >= 0.5 {
                         branch_derived += 1;
                         if is_target {
-                            println!(" → MEDIUM confidence derived");
+                            println!("  → Derived match (medium confidence)");
                         }
                     } else {
                         branch_low_quality += 1;
                         if is_target {
-                            println!(" → LOW quality (not counted)");
+                            println!("  → Low quality call");
                         }
                     }
                 } else if *called_base == ancestral_base {
-                    branch_ancestral += 1;
-                    if is_target {
-                        println!(" → Ancestral state");
-                    }
-                } else if *freq >= 0.9 {
-                    // Different mutation but high quality - count as derived
-                    branch_derived += 1;
-                    if is_target {
-                        println!(" → Different mutation but HIGH confidence non-ancestral");
+                    if *freq >= 0.7 {
+                        branch_ancestral += 1;
+                        if is_target {
+                            println!("  → Ancestral match (high confidence)");
+                        }
+                    } else {
+                        branch_low_quality += 1;
+                        if is_target {
+                            println!("  → Low quality ancestral");
+                        }
                     }
                 } else if *freq >= 0.7 {
-                    // Different mutation but medium quality - count as derived
+                    // Different mutation but high quality
                     branch_derived += 1;
                     if is_target {
-                        println!(" → Different mutation but MEDIUM confidence non-ancestral");
+                        println!("  → Different mutation (counting as derived)");
                     }
                 } else {
                     branch_low_quality += 1;
                     if is_target {
-                        println!(" → Different mutation but LOW quality (not counted)");
+                        println!("  → Low quality different mutation");
                     }
                 }
             } else {
                 branch_no_calls += 1;
                 if is_target {
-                    println!("Position {}: Insufficient depth ({} < 4)", snp.position, depth);
+                    println!("  → Insufficient depth (< 4)");
                 }
             }
         } else {
             branch_no_calls += 1;
             if is_target {
-                println!("Position {}: No call available", snp.position);
+                println!("  → No call available");
             }
         }
     }
 
-    // Early exit if no derived mutations found in a branch with sufficient SNPs
-    if branch_derived == 0 && defining_snps.len() >= 5 {
-        if is_target {
-            println!("\n❌ Branch {} REJECTED", haplogroup.name);
-            println!("   No derived mutations found in {} defining SNPs", defining_snps.len());
-            println!("   Ancestral matches: {}", branch_ancestral);
-            println!("   No calls: {}", branch_no_calls);
-            println!("   Low quality calls: {}", branch_low_quality);
-            println!("   This branch will be scored 0.0");
-        }
-        current_score.score = 0.0;
-        return current_score;
-    }
+    // Calculate score with improved logic
+    let total_calls = branch_derived + branch_ancestral + branch_low_quality;
+    if total_calls > 0 {
+        let derived_ratio = branch_derived as f64 / total_calls as f64;
 
+        // Calculate quality metrics
+        let coverage_ratio = total_calls as f64 / defining_snps.len() as f64;
+        let quality_ratio = (branch_derived + branch_ancestral) as f64
+            / (branch_derived + branch_ancestral + branch_low_quality) as f64;
 
-    // Calculate base score from derived matches
-    let total_called = branch_derived + branch_ancestral;
-    if total_called > 0 {
-        let derived_ratio = branch_derived as f64 / total_called as f64;
-        let coverage_ratio = total_called as f64 / defining_snps.len() as f64;
+        // Base score calculation with more weight on derived SNPs
+        let derived_weight = match branch_derived {
+            d if d >= 3 => 1.0, // Full weight for 3+ derived SNPs
+            2 => 0.9,           // Strong weight for 2 derived SNPs
+            1 => 0.8,           // Moderate weight for 1 derived SNP
+            _ => 0.6,           // Low weight for no derived SNPs
+        };
 
-        // Calculate initial base score from derived ratio
-        let mut branch_score = derived_ratio;
-
-        // Use cumulative counts for confidence calculations
-        let total_snps = current_score.total_snps + defining_snps.len();
-        let total_called = current_score.matches + current_score.ancestral_matches + branch_derived + branch_ancestral;
-        let cumulative_coverage = if total_snps > 0 {
-            total_called as f64 / total_snps as f64
+        // Penalize less for ancestral SNPs if we have good derived matches
+        let ancestral_penalty = if branch_derived >= 3 {
+            0.9 // Minor penalty when we have strong derived evidence
+        } else if branch_derived >= 2 {
+            0.8 // Moderate penalty
         } else {
-            0.0
+            0.7 // Stronger penalty when we have weak derived evidence
         };
 
-        let branch_confidence = match (total_snps, cumulative_coverage) {
-            (n, c) if n >= 15 && c >= 0.7 => 1.2,
-            (n, c) if n >= 10 && c >= 0.6 => 1.1,
-            (n, c) if n >= 5 && c >= 0.5 => 1.0,
-            _ => 0.8,
-        };
+        // Calculate score for terminal vs non-terminal patterns
+        let mut branch_score = 1.0;
 
-        let match_confidence = match derived_ratio {
-            r if r >= 0.8 => 1.2,
-            r if r >= 0.7 => 1.1,
+        // Terminal branch scoring - reward the pattern of both derived and ancestral SNPs
+        if branch_derived >= 2 && branch_ancestral > 0 {
+            // This is a likely terminal branch pattern
+            branch_score = match (branch_derived, branch_ancestral) {
+                (d, a) if d >= 3 && a <= 2 => 2.8, // Ideal terminal pattern
+                (d, a) if d >= 2 && a <= 2 => 2.5, // Good terminal pattern
+                (d, _) if d >= 2 => 2.2,           // Possible terminal pattern
+                _ => 2.0,
+            };
+        } else if branch_derived > 0 {
+            // Non-terminal branch scoring
+            branch_score = match branch_derived {
+                d if d > 100 => 1.0, // Many SNPs - likely ancient branch
+                d if d > 50 => 1.2,  // Too many SNPs for terminal branch
+                d if d > 20 => 1.4,  // Getting closer to terminal branch size
+                d if d > 10 => 1.6,  // Good number of SNPs
+                d if d >= 3 => 1.8,  // Few but confident SNPs
+                _ => 1.5,            // Too few SNPs to be confident
+            };
+        }
+
+        // Adjust for quality and coverage
+        let quality_factor = if branch_low_quality == 0 { 1.1 } else { 0.9 };
+        let coverage_factor = match total_calls as f64 / defining_snps.len() as f64 {
+            r if r >= 0.8 => 1.1,
             r if r >= 0.6 => 1.0,
-            r if r >= 0.5 => 0.8,
-            _ => 0.6,
+            _ => 0.9,
         };
 
-        current_score.score = branch_score * branch_confidence * match_confidence;
-
+        current_score.score = branch_score * quality_factor * coverage_factor;
 
         if is_target {
-            println!("✓ Branch confidence: {:.3}", branch_confidence);
-            println!("✓ Match confidence: {:.3}", match_confidence);
-            println!("✓ Final score: {:.3}", current_score.score);
-            println!("===============================");
+            println!("\nScoring details for {}:", haplogroup.name);
+            println!("  Derived SNPs: {}", branch_derived);
+            println!("  Ancestral SNPs: {}", branch_ancestral);
+            println!("  Low quality: {}", branch_low_quality);
+            println!("  No calls: {}", branch_no_calls);
+            println!("  Quality ratio: {:.2}", quality_ratio);
+            println!("  Coverage ratio: {:.2}", coverage_ratio);
+            println!("  Derived weight: {:.2}", derived_weight);
+            println!(
+                "  Ancestral penalty: {:.2}",
+                if branch_ancestral > 0 {
+                    ancestral_penalty
+                } else {
+                    1.0
+                }
+            );
+            println!("  Base score: {:.2}", branch_score);
+            println!("  Final score: {:.2}", current_score.score);
         }
     }
 
@@ -760,14 +758,14 @@ fn calculate_haplogroup_score(
             snp_calls,
             scores,
             Some(current_score.clone()),
-            consecutive_all_negative
+            consecutive_all_negative,
         );
 
         scores.push(HaplogroupResult {
             name: child.name.clone(),
             score: child_score.score,
             matching_snps: child_score.matches.try_into().unwrap_or(0),
-            mismatching_snps: child_score.ancestral_matches.try_into().unwrap_or(0),
+            mismatching_snps: branch_low_quality.try_into().unwrap_or(0),
             ancestral_matches: child_score.ancestral_matches.try_into().unwrap_or(0),
             no_calls: child_score.no_calls.try_into().unwrap_or(0),
             total_snps: child_score.total_snps.try_into().unwrap_or(0),
