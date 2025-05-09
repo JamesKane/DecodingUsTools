@@ -28,8 +28,6 @@ impl From<FtdnaVariant> for Variant {
             pos: v.position.map(|p| p.unsigned_abs()).unwrap_or_default(),
             ancestral: v.ancestral,
             derived: v.derived,
-            region: v.region,
-            snp_id: v.id.unwrap_or_default(),
         }
     }
 }
@@ -132,10 +130,6 @@ impl TreeProvider for FtdnaTreeProvider {
                 parent_id: n.parent_id,
                 name: n.name,
                 is_root: n.is_root,
-                root: n.root,
-                kits_count: n.kits_count,
-                sub_branches: n.sub_branches,
-                big_y_count: n.big_y_count,
                 variants,
                 children: n.children,
             })

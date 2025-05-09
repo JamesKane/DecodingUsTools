@@ -15,10 +15,6 @@ pub struct Variant {
     pub ancestral: String,
     #[serde(default)]
     pub derived: String,
-    #[serde(default)]
-    pub region: String,
-    #[serde(rename = "snpId", default)]
-    pub snp_id: u32,
 }
 
 #[derive(Deserialize, Debug)]
@@ -27,10 +23,6 @@ pub struct HaplogroupNode {
     pub parent_id: u32,
     pub name: String,
     pub is_root: bool,
-    pub root: String,
-    pub kits_count: u32,
-    pub sub_branches: u32,
-    pub big_y_count: u32,
     pub variants: Vec<Variant>,
     pub children: Vec<u32>,
 }
@@ -423,15 +415,13 @@ fn calculate_haplogroup_score(
     // Calculate score with improved logic
     let total_calls = branch_derived + branch_ancestral + branch_low_quality;
     if total_calls > 0 {
-        let mut branch_score = 0.0;
-
-        match (branch_derived, branch_ancestral) {
-            (d, a) if d >= 3 && a <= d / 2 => branch_score = 2.8,
-            (d, a) if d >= 2 && a <= d => branch_score = 2.5,
-            (d, _) if d >= 2 => branch_score = 2.0,
-            (1, a) if a <= 2 => branch_score = 1.5,
-            (d, a) if a > d * 3 => branch_score = 0.0,
-            _ => branch_score = 1.0,
+        let branch_score = match (branch_derived, branch_ancestral) {
+            (d, a) if d >= 3 && a <= d / 2 => 2.8,
+            (d, a) if d >= 2 && a <= d => 2.5,
+            (d, _) if d >= 2 => 2.0,
+            (1, a) if a <= 2 => 1.5,
+            (d, a) if a > d * 3 => 0.0,
+            _ => 1.0,
         };
 
         let quality_factor = if branch_low_quality == 0 { 1.1 } else { 0.9 };
