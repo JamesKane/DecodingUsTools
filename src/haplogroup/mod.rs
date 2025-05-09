@@ -1,6 +1,6 @@
 use crate::utils::cache::{TreeCache, TreeType};
 use indicatif::{ProgressBar, ProgressStyle};
-use rust_htslib::{bam, bam::Read};
+use rust_htslib::{bam::IndexedReader, bam::Read};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs::File;
@@ -60,13 +60,11 @@ pub struct HaplogroupNode {
     children: Vec<u32>,
 }
 
-
 #[derive(Deserialize, Debug)]
 pub struct HaplogroupTree {
     #[serde(rename = "allNodes")]
     all_nodes: HashMap<String, HaplogroupNode>,
 }
-
 
 #[derive(Debug)]
 pub struct Haplogroup {
@@ -88,12 +86,10 @@ impl HaplogroupTree {
             None
         };
 
-        let snps = node.variants
-            .iter()
-            .filter_map(|v| v.to_snp())
-            .collect();
+        let snps = node.variants.iter().filter_map(|v| v.to_snp()).collect();
 
-        let children = node.children
+        let children = node
+            .children
             .iter()
             .filter_map(|&child_id| self.build_tree(child_id))
             .collect();
@@ -147,7 +143,8 @@ pub fn analyze_haplogroup(
 
     progress.set_message("Validating BAM reference genome...");
 
-    let mut bam = bam::Reader::from_path(&bam_file)?;
+    // Use IndexedReader instead of Reader
+    let mut bam = IndexedReader::from_path(&bam_file)?;
     validate_hg38_reference(&bam)?;
 
     // Get tree from cache
@@ -155,52 +152,80 @@ pub fn analyze_haplogroup(
     let tree_json: HaplogroupTree = tree_cache.get_tree()?;
 
     // Find the root node (usually has parent_id = 0)
-    let root_node = tree_json.all_nodes
+    let root_node = tree_json
+        .all_nodes
         .values()
         .find(|node| node.is_root)
         .ok_or("No root node found")?;
 
     // Build the tree structure starting from root
-    let tree = tree_json.build_tree(root_node.haplogroup_id)
+    let tree = tree_json
+        .build_tree(root_node.haplogroup_id)
         .ok_or("Failed to build tree")?;
-
-    progress.set_message("Processing BAM file...");
 
     // Create map of positions to check
     let mut positions: HashMap<u32, Vec<(&str, &Snp)>> = HashMap::new();
     collect_snps(&tree, &mut positions);
 
-    // Process BAM file
-    let mut pileup = bam.pileup();
-    pileup.set_max_depth(1000000);
+    // Determine which chromosome we need to process
+    let need_y = positions
+        .iter()
+        .any(|(_, snps)| snps.iter().any(|(_, snp)| snp.chromosome == "Y"));
+    let need_mt = positions
+        .iter()
+        .any(|(_, snps)| snps.iter().any(|(_, snp)| snp.chromosome == "MT"));
 
     let mut snp_calls: HashMap<u32, (char, u32, f64)> = HashMap::new();
 
-    for p in pileup {
-        let pileup = p?;
-        let pos = pileup.pos() as u32;
+    // Create a progress bar for BAM processing
+    let progress_style = ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({percent}%) {msg}")
+        .unwrap()
+        .progress_chars("#>-");
 
-        if positions.contains_key(&pos) && pileup.depth() >= min_depth {
-            let bases: Vec<_> = pileup
-                .alignments()
-                .filter(|aln| aln.record().mapq() >= min_quality)
-                .filter_map(|aln| Option::from(aln.record().seq()[aln.qpos()?] as char))
-                .collect();
+    // Process one chromosome based on the tree type
+    if need_y {
+        let tid = bam.header().tid(b"chrY").ok_or("chrY not found in BAM")?;
+        let total_len = bam.header().target_len(tid).unwrap_or(0);
 
-            if !bases.is_empty() {
-                let mut base_counts: HashMap<char, u32> = HashMap::new();
-                for base in bases {
-                    *base_counts.entry(base).or_insert(0) += 1;
-                }
+        let progress_bar = ProgressBar::new(total_len);
+        progress_bar.set_style(progress_style.clone());
+        progress_bar.set_message("Processing chromosome Y...");
 
-                if let Some((base, count)) = base_counts.iter().max_by_key(|&(_, count)| count) {
-                    let freq = *count as f64 / pileup.depth() as f64;
-                    if freq >= 0.8 {
-                        snp_calls.insert(pos, (*base, pileup.depth(), freq));
-                    }
-                }
-            }
-        }
+        // Create the region string for fetch
+        let region = format!("chrY:1-{}", total_len);
+        bam.fetch(&region)?;
+        process_region(
+            &mut bam,
+            &positions,
+            min_depth,
+            min_quality,
+            &mut snp_calls,
+            &progress_bar,
+        )?;
+
+        progress_bar.finish_with_message("Chromosome Y processing complete");
+    } else if need_mt {
+        let tid = bam.header().tid(b"chrM").ok_or("chrM not found in BAM")?;
+        let total_len = bam.header().target_len(tid).unwrap_or(0);
+
+        let progress_bar = ProgressBar::new(total_len);
+        progress_bar.set_style(progress_style);
+        progress_bar.set_message("Processing mitochondrial DNA...");
+
+        // Create the region string for fetch
+        let region = format!("chrM:1-{}", total_len);
+        bam.fetch(&region)?;
+        process_region(
+            &mut bam,
+            &positions,
+            min_depth,
+            min_quality,
+            &mut snp_calls,
+            &progress_bar,
+        )?;
+
+        progress_bar.finish_with_message("Mitochondrial DNA processing complete");
     }
 
     progress.set_message("Scoring haplogroups...");
@@ -209,7 +234,7 @@ pub fn analyze_haplogroup(
     let mut scores = Vec::new();
     calculate_haplogroup_score(&tree, &snp_calls, &mut scores, false);
 
-    // Sort results
+    // Sort and write results
     scores.sort_by(|a, b| {
         let score_diff = b.1.partial_cmp(&a.1).unwrap();
         if (b.1 - a.1).abs() < 0.1 {
@@ -219,7 +244,6 @@ pub fn analyze_haplogroup(
         }
     });
 
-    // Write results
     let mut writer = BufWriter::new(File::create(output_file)?);
     writeln!(writer, "Haplogroup\tScore\tMatching_SNPs\tTotal_SNPs")?;
     for (name, score, matching, total) in scores {
@@ -227,6 +251,50 @@ pub fn analyze_haplogroup(
     }
 
     progress.finish_with_message("Analysis complete!");
+    Ok(())
+}
+
+// Helper function to process a region of the BAM file
+fn process_region<R: Read>(
+    bam: &mut R,
+    positions: &HashMap<u32, Vec<(&str, &Snp)>>,
+    min_depth: u32,
+    min_quality: u8,
+    snp_calls: &mut HashMap<u32, (char, u32, f64)>,
+    progress: &ProgressBar,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut coverage: HashMap<u32, Vec<char>> = HashMap::new();
+
+    // First pass: collect bases at positions
+    for r in bam.records() {
+        let record = r?;
+        let pos = record.pos() as u32;
+        progress.set_position(pos as u64);
+
+        if positions.contains_key(&pos) && record.mapq() >= min_quality {
+            if let Some(base) = record.seq().as_bytes().first().map(|&b| b as char) {
+                coverage.entry(pos).or_default().push(base);
+            }
+        }
+    }
+
+    // Second pass: analyze coverage
+    for (pos, bases) in coverage {
+        if bases.len() >= min_depth as usize {
+            let mut base_counts: HashMap<char, u32> = HashMap::new();
+            for base in bases {
+                *base_counts.entry(base).or_insert(0) += 1;
+            }
+
+            if let Some((base, count)) = base_counts.iter().max_by_key(|&(_, count)| count) {
+                let freq = *count as f64 / base_counts.values().sum::<u32>() as f64;
+                if freq >= 0.8 {
+                    snp_calls.insert(pos, (*base, base_counts.values().sum(), freq));
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -328,38 +396,20 @@ fn calculate_haplogroup_score(
     }
 }
 
-fn validate_hg38_reference(bam: &bam::Reader) -> Result<(), Box<dyn std::error::Error>> {
-    let header_view = bam.header();
+fn validate_hg38_reference<R: Read>(bam: &R) -> Result<(), Box<dyn std::error::Error>> {
+    let header = bam.header();
+    let sq_count = header.target_count();
 
-    // Get sequence dictionary
-    let sequences: HashMap<&[u8], u64> = header_view
-        .target_names()
-        .iter()
-        .enumerate()
-        .filter_map(|(tid, name)| header_view.target_len(tid as u32).map(|len| (*name, len)))
-        .collect();
-
-    // Check chrY length
-    let chr_y_len = sequences
-        .get(&b"chrY"[..])
-        .ok_or("chrY not found in BAM header")?;
-    if *chr_y_len != 57227415 {
-        return Err("BAM file appears to not be aligned to hg38: chrY length mismatch".into());
+    if sq_count == 0 {
+        return Err("BAM file has no reference sequences".into());
     }
 
-    // Check chrM length
-    let chr_m_len = sequences
-        .get(&b"chrM"[..])
-        .ok_or("chrM not found in BAM header")?;
-    if *chr_m_len != 16569 {
-        return Err("BAM file appears to not be aligned to hg38: chrM length mismatch".into());
-    }
+    // Check if chrY or chrM exists based on need
+    let has_chry = header.tid(b"chrY").is_some();
+    let has_chrm = header.tid(b"chrM").is_some();
 
-    // Check for presence of chrY_KI270740v1_random
-    if !sequences.contains_key(&b"chrY_KI270740v1_random"[..]) {
-        return Err(
-            "BAM file appears to not be aligned to hg38: missing chrY_KI270740v1_random".into(),
-        );
+    if !has_chry && !has_chrm {
+        return Err("BAM file missing required chromosome (chrY or chrM)".into());
     }
 
     Ok(())
