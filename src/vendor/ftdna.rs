@@ -10,7 +10,7 @@ pub struct FtdnaVariant {
     #[serde(default)]
     pub variant: String,
     #[serde(default)]
-    pub position: Option<u32>,
+    pub position: Option<i32>,  // Changed to i32 to handle negative values
     #[serde(default)]
     pub ancestral: String,
     #[serde(default)]
@@ -21,11 +21,35 @@ pub struct FtdnaVariant {
     pub id: Option<u32>,
 }
 
+impl FtdnaVariant {
+    fn to_snp(&self, tree_type: TreeType) -> Option<Snp> {
+        // Skip variants with missing required data
+        let position = self.position?;
+        if self.ancestral.is_empty() || self.derived.is_empty() {
+            return None;
+        }
+
+        Some(Snp {
+            position: position.unsigned_abs(),  // Convert negative to positive
+            ancestral: self.ancestral.clone(),
+            derived: self.derived.clone(),
+            chromosome: match tree_type {
+                TreeType::YDNA => "chrY".to_string(),
+                TreeType::MTDNA => "chrM".to_string(),
+            },
+            build: match tree_type {
+                TreeType::YDNA => "hg38".to_string(),
+                TreeType::MTDNA => "rCRS".to_string(),
+            },
+        })
+    }
+}
+
 impl From<FtdnaVariant> for Variant {
     fn from(v: FtdnaVariant) -> Self {
         Variant {
             variant: v.variant,
-            pos: v.position.unwrap_or_default(),
+            pos: v.position.map(|p| p.unsigned_abs()).unwrap_or_default(),
             ancestral: v.ancestral,
             derived: v.derived,
             region: v.region,
@@ -33,6 +57,8 @@ impl From<FtdnaVariant> for Variant {
         }
     }
 }
+
+
 
 #[derive(Deserialize)]
 struct FtdnaNode {
@@ -145,29 +171,28 @@ impl TreeProvider for FtdnaTreeProvider {
     }
 
     fn build_tree(&self, tree: &HaplogroupTree, node_id: u32, tree_type: TreeType) -> Option<Haplogroup> {
-        let node = tree.all_nodes.iter().find(|(_, node)| node.haplogroup_id == node_id)?;
+        let node_str = node_id.to_string();
+        let node = tree.all_nodes.get(&node_str)?;
 
-        let parent = if node.1.parent_id != 0 {
-            tree.all_nodes
-                .values()
-                .find(|n| n.haplogroup_id == node.1.parent_id)
-                .map(|p| p.name.clone())
-        } else {
-            None
-        };
-
-        let snps = node.1.variants
+        let snps: Vec<Snp> = node
+            .variants
             .iter()
             .filter_map(|v| v.to_snp(tree_type))
             .collect();
 
-        let children = node.1.children.iter()
-            .filter_map(|child_id| self.build_tree(tree, *child_id, tree_type))
+        let children = node
+            .children
+            .iter()
+            .filter_map(|&child_id| self.build_tree(tree, child_id, tree_type))
             .collect();
 
         Some(Haplogroup {
-            name: node.1.name.clone(),
-            parent,
+            name: node.name.clone(),
+            parent: if node.parent_id == 0 {
+                None
+            } else {
+                Some(tree.all_nodes.get(&node.parent_id.to_string())?.name.clone())
+            },
             snps,
             children,
         })
