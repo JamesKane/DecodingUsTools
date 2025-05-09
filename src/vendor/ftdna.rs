@@ -21,30 +21,6 @@ pub struct FtdnaVariant {
     pub id: Option<u32>,
 }
 
-impl FtdnaVariant {
-    fn to_snp(&self, tree_type: TreeType) -> Option<Snp> {
-        // Skip variants with missing required data
-        let position = self.position?;
-        if self.ancestral.is_empty() || self.derived.is_empty() {
-            return None;
-        }
-
-        Some(Snp {
-            position: position.unsigned_abs(),  // Convert negative to positive
-            ancestral: self.ancestral.clone(),
-            derived: self.derived.clone(),
-            chromosome: match tree_type {
-                TreeType::YDNA => "chrY".to_string(),
-                TreeType::MTDNA => "chrM".to_string(),
-            },
-            build: match tree_type {
-                TreeType::YDNA => "hg38".to_string(),
-                TreeType::MTDNA => "rCRS".to_string(),
-            },
-        })
-    }
-}
-
 impl From<FtdnaVariant> for Variant {
     fn from(v: FtdnaVariant) -> Self {
         Variant {
@@ -57,8 +33,6 @@ impl From<FtdnaVariant> for Variant {
         }
     }
 }
-
-
 
 #[derive(Deserialize)]
 struct FtdnaNode {
