@@ -22,7 +22,7 @@ pub struct Variant {
 }
 
 impl Variant {
-    fn to_snp(&self) -> Option<Snp> {
+    fn to_snp(&self, tree_type: TreeType) -> Option<Snp> {
         // Only convert variants that have all required fields
         if self.variant.is_empty() || self.ancestral.is_empty() || self.derived.is_empty() {
             return None;
@@ -32,17 +32,24 @@ impl Variant {
             position: self.pos,
             ancestral: self.ancestral.clone(),
             derived: self.derived.clone(),
-            chromosome: default_chromosome(),
-            build: default_build(),
+            chromosome: match tree_type {
+                TreeType::YDNA => "Y".to_string(),
+                TreeType::MTDNA => "MT".to_string(),
+            },
+            build: match tree_type {
+                TreeType::YDNA => "hg38".to_string(),
+                TreeType::MTDNA => "rCRS".to_string(),
+            },
         })
     }
 }
+
 
 #[derive(Deserialize, Debug)]
 pub struct HaplogroupNode {
     #[serde(rename = "haplogroupId")]
     haplogroup_id: u32,
-    #[serde(rename = "parentId")]
+    #[serde(rename = "parentId", default)]
     parent_id: u32,
     name: String,
     #[serde(rename = "isRoot")]
@@ -75,7 +82,7 @@ pub struct Haplogroup {
 }
 
 impl HaplogroupTree {
-    fn build_tree(&self, node_id: u32) -> Option<Haplogroup> {
+    fn build_tree(&self, node_id: u32, tree_type: TreeType) -> Option<Haplogroup> {
         let node = self.all_nodes.get(&node_id.to_string())?;
 
         let parent = if node.parent_id != 0 {
@@ -86,12 +93,15 @@ impl HaplogroupTree {
             None
         };
 
-        let snps = node.variants.iter().filter_map(|v| v.to_snp()).collect();
+        let snps = node.variants
+            .iter()
+            .filter_map(|v| v.to_snp(tree_type))
+            .collect();
 
         let children = node
             .children
             .iter()
-            .filter_map(|&child_id| self.build_tree(child_id))
+            .filter_map(|&child_id| self.build_tree(child_id, tree_type))
             .collect();
 
         Some(Haplogroup {
@@ -108,18 +118,10 @@ pub struct Snp {
     position: u32,
     ancestral: String,
     derived: String,
-    #[serde(default = "default_chromosome")]
+    #[serde(skip)]
     chromosome: String,
-    #[serde(default = "default_build")]
+    #[serde(skip)]
     build: String,
-}
-
-fn default_chromosome() -> String {
-    "MT".to_string()
-}
-
-fn default_build() -> String {
-    "rCRS".to_string()
 }
 
 struct BranchResult {
@@ -165,7 +167,7 @@ pub fn analyze_haplogroup(
 
     // Build the tree structure starting from root
     let tree = tree_json
-        .build_tree(root_node.haplogroup_id)
+        .build_tree(root_node.haplogroup_id, tree_type)
         .ok_or("Failed to build tree")?;
 
     // Create map of positions to check
