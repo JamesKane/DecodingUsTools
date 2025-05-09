@@ -14,13 +14,6 @@ const BAM_CSOFT_CLIP: u32 = 4;
 const BAM_CEQUAL: u32 = 7;
 const BAM_CDIFF: u32 = 8;
 
-macro_rules! debug_println {
-    ($($arg:tt)*) => {
-        #[cfg(debug_assertions)]
-        println!($($arg)*);
-    };
-}
-
 #[derive(Deserialize, Debug)]
 pub struct Variant {
     variant: String,
@@ -506,33 +499,12 @@ fn collect_snps<'a>(
     haplogroup: &'a Haplogroup,
     positions: &mut HashMap<u32, Vec<(&'a str, &'a Snp)>>,
 ) {
-    debug_println!(
-        "Processing haplogroup: {} with {} SNPs",
-        haplogroup.name,
-        haplogroup.snps.len()
-    );
     for snp in &haplogroup.snps {
-        debug_println!(
-            "  SNP at pos {}: ancestral={}, derived={}, chrom={}, build={}",
-            snp.position,
-            snp.ancestral,
-            snp.derived,
-            snp.chromosome,
-            snp.build
-        );
-
         if is_valid_snp(snp) {
             positions
                 .entry(snp.position)
                 .or_default()
                 .push((&haplogroup.name, snp));
-        } else {
-            debug_println!(
-                "  Invalid SNP: pos={}, chrom={}, build={}",
-                snp.position,
-                snp.chromosome,
-                snp.build
-            );
         }
     }
 
@@ -549,27 +521,18 @@ fn is_valid_snp(snp: &Snp) -> bool {
     }
 }
 
-#[derive(Debug)]
-struct PathInfo {
-    accumulated_snps: HashSet<u32>, // All SNP positions from root to current
-    depth: u32,
-}
-
 fn calculate_haplogroup_score(
     haplogroup: &Haplogroup,
     snp_calls: &HashMap<u32, (char, u32, f64)>,
     scores: &mut Vec<HaplogroupResult>,
-    parent_info: Option<&(HaplogroupScore, HashSet<u32>)>, // Parent score and cumulative SNPs
+    parent_info: Option<&(HaplogroupScore, HashSet<u32>)>,
     depth: u32,
 ) -> (HaplogroupScore, HashSet<u32>) {
     let mut current_score = HaplogroupScore::default();
-
-    // Initialize cumulative SNPs set from parent or empty
     let mut cumulative_snps = parent_info
         .map(|(_, snps)| snps.clone())
         .unwrap_or_default();
 
-    // Add this branch's SNPs to cumulative set
     for snp in &haplogroup.snps {
         if is_valid_snp(snp) {
             cumulative_snps.insert(snp.position);
@@ -587,12 +550,6 @@ fn calculate_haplogroup_score(
     let mut branch_no_calls = 0;
     let mut branch_low_quality = 0;
 
-    let is_target = haplogroup.name.contains("FGC29071") || haplogroup.name.contains("FGC29067");
-
-    if is_target {
-        println!("\nAnalyzing target branch: {}", haplogroup.name);
-    }
-
     // Process defining SNPs
     for snp in &defining_snps {
         if let Some((called_base, depth, freq)) = snp_calls.get(&snp.position) {
@@ -600,65 +557,30 @@ fn calculate_haplogroup_score(
                 let derived_base = snp.derived.chars().next().unwrap();
                 let ancestral_base = snp.ancestral.chars().next().unwrap();
 
-                if is_target {
-                    println!(
-                        "SNP at {}: called={} (depth={}, freq={:.2}) derived={} ancestral={}",
-                        snp.position, called_base, depth, freq, derived_base, ancestral_base
-                    );
-                }
-
                 if *called_base == derived_base {
                     if *freq >= 0.7 {
                         branch_derived += 1;
-                        if is_target {
-                            println!("  → Derived match (high confidence)");
-                        }
                     } else if *freq >= 0.5 {
                         branch_derived += 1;
-                        if is_target {
-                            println!("  → Derived match (medium confidence)");
-                        }
                     } else {
                         branch_low_quality += 1;
-                        if is_target {
-                            println!("  → Low quality call");
-                        }
                     }
                 } else if *called_base == ancestral_base {
                     if *freq >= 0.7 {
                         branch_ancestral += 1;
-                        if is_target {
-                            println!("  → Ancestral match (high confidence)");
-                        }
                     } else {
                         branch_low_quality += 1;
-                        if is_target {
-                            println!("  → Low quality ancestral");
-                        }
                     }
                 } else if *freq >= 0.7 {
-                    // Different mutation but high quality
                     branch_derived += 1;
-                    if is_target {
-                        println!("  → Different mutation (counting as derived)");
-                    }
                 } else {
                     branch_low_quality += 1;
-                    if is_target {
-                        println!("  → Low quality different mutation");
-                    }
                 }
             } else {
                 branch_no_calls += 1;
-                if is_target {
-                    println!("  → Insufficient depth (< 4)");
-                }
             }
         } else {
             branch_no_calls += 1;
-            if is_target {
-                println!("  → No call available");
-            }
         }
     }
 
@@ -667,41 +589,24 @@ fn calculate_haplogroup_score(
     if total_calls > 0 {
         let mut branch_score = 0.0;
 
-        // Score based on the pattern of derived vs ancestral
         match (branch_derived, branch_ancestral) {
-            // Strong derived evidence (3+ derived, minimal ancestral)
-            (d, a) if d >= 3 && a <= d/2 => branch_score = 2.8,
-
-            // Good derived evidence (2+ derived, some ancestral allowed)
+            (d, a) if d >= 3 && a <= d / 2 => branch_score = 2.8,
             (d, a) if d >= 2 && a <= d => branch_score = 2.5,
-
-            // Mixed evidence but still significant derived
             (d, _) if d >= 2 => branch_score = 2.0,
-
-            // Single derived match
             (1, a) if a <= 2 => branch_score = 1.5,
-
-            // Pure ancestral or too many ancestral vs derived
             (d, a) if a > d * 3 => branch_score = 0.0,
-
-            // Default case for other patterns
             _ => branch_score = 1.0,
         };
 
-        // Adjust for coverage and quality
         let quality_factor = if branch_low_quality == 0 { 1.1 } else { 0.9 };
-
         current_score.score = branch_score * quality_factor;
     }
 
-
-    // Update running totals
     current_score.matches += branch_derived;
     current_score.ancestral_matches += branch_ancestral;
     current_score.no_calls += branch_no_calls;
     current_score.total_snps += defining_snps.len();
 
-    // Don't process children if the current branch is heavily ancestral
     if branch_ancestral > branch_derived * 10 {
         scores.push(HaplogroupResult {
             name: haplogroup.name.clone(),
@@ -717,7 +622,6 @@ fn calculate_haplogroup_score(
         return (current_score, cumulative_snps);
     }
 
-    // Process children
     for child in &haplogroup.children {
         let (child_score, child_cumulative) = calculate_haplogroup_score(
             child,
@@ -785,20 +689,25 @@ fn collect_scored_paths(scores: Vec<HaplogroupResult>, tree: &Haplogroup) -> Vec
     let mut ordered_results = Vec::new();
 
     // Filter out results with overwhelming ancestral evidence
-    let mut remaining: Vec<HaplogroupResult> = scores.into_iter()
+    let mut remaining: Vec<HaplogroupResult> = scores
+        .into_iter()
         .filter(|result| {
             // Remove if:
             // 1. Has overwhelming ancestral evidence (>100x derived)
             // 2. OR has zero derived matches and significant ancestral matches (>10)
             // 3. OR has zero derived and zero ancestral matches
-            !(result.ancestral_matches > result.matching_snps * 100 ||
-                (result.matching_snps == 0 && result.ancestral_matches > 10) || 
-                (result.score == 0.0 && result.matching_snps == 0))
+            !(result.ancestral_matches > result.matching_snps * 100
+                || (result.matching_snps == 0 && result.ancestral_matches > 10)
+                || (result.score == 0.0 && result.matching_snps == 0))
         })
         .collect();
 
     // Rest of the function remains the same...
-    remaining.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    remaining.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     if let Some(top_result) = remaining.first() {
         if let Some(path) = find_path_to_root(tree, &top_result.name, &remaining) {
