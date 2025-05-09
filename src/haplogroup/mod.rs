@@ -416,7 +416,6 @@ pub fn analyze_haplogroup(
         )?;
     }
 
-
     progress.finish_with_message("Analysis complete!");
     Ok(())
 }
@@ -666,91 +665,57 @@ fn calculate_haplogroup_score(
     // Calculate score with improved logic
     let total_calls = branch_derived + branch_ancestral + branch_low_quality;
     if total_calls > 0 {
-        let derived_ratio = branch_derived as f64 / total_calls as f64;
+        let mut branch_score = 0.0;
 
-        // Calculate quality metrics
-        let coverage_ratio = total_calls as f64 / defining_snps.len() as f64;
-        let quality_ratio = (branch_derived + branch_ancestral) as f64
-            / (branch_derived + branch_ancestral + branch_low_quality) as f64;
+        // Score based on the pattern of derived vs ancestral
+        match (branch_derived, branch_ancestral) {
+            // Strong derived evidence (3+ derived, minimal ancestral)
+            (d, a) if d >= 3 && a <= d/2 => branch_score = 2.8,
 
-        // Base score calculation with more weight on derived SNPs
-        let derived_weight = match branch_derived {
-            d if d >= 3 => 1.0, // Full weight for 3+ derived SNPs
-            2 => 0.9,           // Strong weight for 2 derived SNPs
-            1 => 0.8,           // Moderate weight for 1 derived SNP
-            _ => 0.6,           // Low weight for no derived SNPs
+            // Good derived evidence (2+ derived, some ancestral allowed)
+            (d, a) if d >= 2 && a <= d => branch_score = 2.5,
+
+            // Mixed evidence but still significant derived
+            (d, _) if d >= 2 => branch_score = 2.0,
+
+            // Single derived match
+            (1, a) if a <= 2 => branch_score = 1.5,
+
+            // Pure ancestral or too many ancestral vs derived
+            (d, a) if a > d * 3 => branch_score = 0.0,
+
+            // Default case for other patterns
+            _ => branch_score = 1.0,
         };
 
-        // Penalize less for ancestral SNPs if we have good derived matches
-        let ancestral_penalty = if branch_derived >= 3 {
-            0.9 // Minor penalty when we have strong derived evidence
-        } else if branch_derived >= 2 {
-            0.8 // Moderate penalty
-        } else {
-            0.7 // Stronger penalty when we have weak derived evidence
-        };
-
-        // Calculate score for terminal vs non-terminal patterns
-        let mut branch_score = 1.0;
-
-        // Terminal branch scoring - reward the pattern of both derived and ancestral SNPs
-        if branch_derived >= 2 && branch_ancestral > 0 {
-            // This is a likely terminal branch pattern
-            branch_score = match (branch_derived, branch_ancestral) {
-                (d, a) if d >= 3 && a <= 2 => 2.8, // Ideal terminal pattern
-                (d, a) if d >= 2 && a <= 2 => 2.5, // Good terminal pattern
-                (d, _) if d >= 2 => 2.2,           // Possible terminal pattern
-                _ => 2.0,
-            };
-        } else if branch_derived > 0 {
-            // Non-terminal branch scoring
-            branch_score = match branch_derived {
-                d if d > 100 => 1.0, // Many SNPs - likely ancient branch
-                d if d > 50 => 1.2,  // Too many SNPs for terminal branch
-                d if d > 20 => 1.4,  // Getting closer to terminal branch size
-                d if d > 10 => 1.6,  // Good number of SNPs
-                d if d >= 3 => 1.8,  // Few but confident SNPs
-                _ => 1.5,            // Too few SNPs to be confident
-            };
-        }
-
-        // Adjust for quality and coverage
+        // Adjust for coverage and quality
         let quality_factor = if branch_low_quality == 0 { 1.1 } else { 0.9 };
-        let coverage_factor = match total_calls as f64 / defining_snps.len() as f64 {
-            r if r >= 0.8 => 1.1,
-            r if r >= 0.6 => 1.0,
-            _ => 0.9,
-        };
 
-        current_score.score = branch_score * quality_factor * coverage_factor;
-
-        if is_target {
-            println!("\nScoring details for {}:", haplogroup.name);
-            println!("  Derived SNPs: {}", branch_derived);
-            println!("  Ancestral SNPs: {}", branch_ancestral);
-            println!("  Low quality: {}", branch_low_quality);
-            println!("  No calls: {}", branch_no_calls);
-            println!("  Quality ratio: {:.2}", quality_ratio);
-            println!("  Coverage ratio: {:.2}", coverage_ratio);
-            println!("  Derived weight: {:.2}", derived_weight);
-            println!(
-                "  Ancestral penalty: {:.2}",
-                if branch_ancestral > 0 {
-                    ancestral_penalty
-                } else {
-                    1.0
-                }
-            );
-            println!("  Base score: {:.2}", branch_score);
-            println!("  Final score: {:.2}", current_score.score);
-        }
+        current_score.score = branch_score * quality_factor;
     }
+
 
     // Update running totals
     current_score.matches += branch_derived;
     current_score.ancestral_matches += branch_ancestral;
     current_score.no_calls += branch_no_calls;
     current_score.total_snps += defining_snps.len();
+
+    // Don't process children if the current branch is heavily ancestral
+    if branch_ancestral > branch_derived * 10 {
+        scores.push(HaplogroupResult {
+            name: haplogroup.name.clone(),
+            score: 0.0,
+            matching_snps: branch_derived.try_into().unwrap_or(0),
+            mismatching_snps: branch_low_quality.try_into().unwrap_or(0),
+            ancestral_matches: branch_ancestral.try_into().unwrap_or(0),
+            no_calls: branch_no_calls.try_into().unwrap_or(0),
+            total_snps: defining_snps.len() as u32,
+            cumulative_snps: cumulative_snps.len() as u32,
+            depth,
+        });
+        return (current_score, cumulative_snps);
+    }
 
     // Process children
     for child in &haplogroup.children {
@@ -797,12 +762,6 @@ fn validate_hg38_reference<R: Read>(bam: &R) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
-#[derive(Debug)]
-struct ScoredPath {
-    results: Vec<HaplogroupResult>,
-    total_score: f64,
-}
-
 fn find_path_to_root(
     haplogroup: &Haplogroup,
     target_name: &str,
@@ -824,14 +783,25 @@ fn find_path_to_root(
 
 fn collect_scored_paths(scores: Vec<HaplogroupResult>, tree: &Haplogroup) -> Vec<HaplogroupResult> {
     let mut ordered_results = Vec::new();
-    let mut remaining = scores;
 
-    // First, find the highest scoring result
+    // Filter out results with overwhelming ancestral evidence
+    let mut remaining: Vec<HaplogroupResult> = scores.into_iter()
+        .filter(|result| {
+            // Remove if:
+            // 1. Has overwhelming ancestral evidence (>100x derived)
+            // 2. OR has zero derived matches and significant ancestral matches (>10)
+            // 3. OR has zero derived and zero ancestral matches
+            !(result.ancestral_matches > result.matching_snps * 100 ||
+                (result.matching_snps == 0 && result.ancestral_matches > 10) || 
+                (result.score == 0.0 && result.matching_snps == 0))
+        })
+        .collect();
+
+    // Rest of the function remains the same...
     remaining.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
 
     if let Some(top_result) = remaining.first() {
         if let Some(path) = find_path_to_root(tree, &top_result.name, &remaining) {
-            // Add results in path from leaf to root
             for name in path.iter() {
                 if let Some(pos) = remaining.iter().position(|r| r.name == *name) {
                     ordered_results.push(remaining.remove(pos));
@@ -840,9 +810,6 @@ fn collect_scored_paths(scores: Vec<HaplogroupResult>, tree: &Haplogroup) -> Vec
         }
     }
 
-    // Add any remaining results sorted by score
-    remaining.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     ordered_results.extend(remaining);
-
     ordered_results
 }
