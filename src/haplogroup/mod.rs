@@ -9,7 +9,7 @@ use std::io::{BufWriter, Write};
 #[derive(Deserialize, Debug)]
 pub struct Variant {
     variant: String,
-    #[serde(default)]
+    #[serde(rename = "position", default)]
     pos: u32,
     #[serde(default)]
     ancestral: String,
@@ -19,6 +19,39 @@ pub struct Variant {
     region: String,
     #[serde(rename = "snpId", default)]
     snp_id: u32,
+}
+
+#[derive(Deserialize, Debug)]
+struct RawVariant {
+    #[serde(default)]
+    variant: Option<String>,
+    #[serde(alias = "pos")]
+    position: Option<i32>,
+    #[serde(default)]
+    ancestral: Option<String>,
+    #[serde(default)]
+    derived: Option<String>,
+    #[serde(default)]
+    region: Option<String>,
+    #[serde(rename = "snpId", default)]
+    snp_id: Option<u32>,
+}
+
+
+// Deal with incoherent variants in FTDNA's tree
+impl TryFrom<RawVariant> for Variant {
+    type Error = &'static str;
+
+    fn try_from(raw: RawVariant) -> Result<Self, Self::Error> {
+        Ok(Variant {
+            variant: raw.variant.ok_or("missing variant")?,
+            pos: raw.position.ok_or("missing position")?.unsigned_abs(),
+            ancestral: raw.ancestral.ok_or("missing ancestral")?,
+            derived: raw.derived.ok_or("missing derived")?,
+            region: raw.region.unwrap_or_default(),
+            snp_id: raw.snp_id.unwrap_or_default(),
+        })
+    }
 }
 
 impl Variant {
@@ -33,8 +66,8 @@ impl Variant {
             ancestral: self.ancestral.clone(),
             derived: self.derived.clone(),
             chromosome: match tree_type {
-                TreeType::YDNA => "Y".to_string(),
-                TreeType::MTDNA => "MT".to_string(),
+                TreeType::YDNA => "chrY".to_string(),
+                TreeType::MTDNA => "chrM".to_string(),
             },
             build: match tree_type {
                 TreeType::YDNA => "hg38".to_string(),
@@ -70,6 +103,7 @@ pub struct HaplogroupNode {
 #[derive(Deserialize, Debug)]
 pub struct HaplogroupTree {
     #[serde(rename = "allNodes")]
+    #[serde(deserialize_with = "deserialize_nodes")]
     all_nodes: HashMap<String, HaplogroupNode>,
 }
 
@@ -80,6 +114,64 @@ pub struct Haplogroup {
     snps: Vec<Snp>,
     children: Vec<Haplogroup>,
 }
+
+fn deserialize_nodes<'de, D>(deserializer: D) -> Result<HashMap<String, HaplogroupNode>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    // First deserialize into a temporary structure with RawVariants
+    #[derive(Deserialize)]
+    struct TempNode {
+        #[serde(rename = "haplogroupId")]
+        haplogroup_id: u32,
+        #[serde(rename = "parentId", default)]
+        parent_id: u32,
+        name: String,
+        #[serde(rename = "isRoot")]
+        is_root: bool,
+        root: String,
+        #[serde(rename = "kitsCount")]
+        kits_count: u32,
+        #[serde(rename = "subBranches")]
+        sub_branches: u32,
+        #[serde(rename = "bigYCount")]
+        big_y_count: u32,
+        #[serde(default)]
+        variants: Vec<RawVariant>,
+        #[serde(default)]
+        children: Vec<u32>,
+    }
+
+    let temp_map: HashMap<String, TempNode> = HashMap::deserialize(deserializer)?;
+
+    // Convert TempNode to HaplogroupNode, processing variants
+    temp_map
+        .into_iter()
+        .map(|(k, v)| {
+            let variants = v.variants
+                .into_iter()
+                .filter_map(|raw| Variant::try_from(raw).ok())
+                .collect();
+
+            let node = HaplogroupNode {
+                haplogroup_id: v.haplogroup_id,
+                parent_id: v.parent_id,
+                name: v.name,
+                is_root: v.is_root,
+                root: v.root,
+                kits_count: v.kits_count,
+                sub_branches: v.sub_branches,
+                big_y_count: v.big_y_count,
+                variants,
+                children: v.children,
+            };
+            Ok((k, node))
+        })
+        .collect()
+}
+
 
 impl HaplogroupTree {
     fn build_tree(&self, node_id: u32, tree_type: TreeType) -> Option<Haplogroup> {
@@ -177,10 +269,10 @@ pub fn analyze_haplogroup(
     // Determine which chromosome we need to process
     let need_y = positions
         .iter()
-        .any(|(_, snps)| snps.iter().any(|(_, snp)| snp.chromosome == "Y"));
+        .any(|(_, snps)| snps.iter().any(|(_, snp)| snp.chromosome == "chrY"));
     let need_mt = positions
         .iter()
-        .any(|(_, snps)| snps.iter().any(|(_, snp)| snp.chromosome == "MT"));
+        .any(|(_, snps)| snps.iter().any(|(_, snp)| snp.chromosome == "chrM"));
 
     let mut snp_calls: HashMap<u32, (char, u32, f64)> = HashMap::new();
 
@@ -272,15 +364,18 @@ fn process_region<R: Read>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut coverage: HashMap<u32, Vec<char>> = HashMap::new();
 
-    // First pass: collect bases at positions
     for r in bam.records() {
         let record = r?;
-        let pos = record.pos() as u32;
-        progress.set_position(pos as u64);
+        let start_pos = record.pos() as u32;
+        progress.set_position(start_pos as u64);
 
-        if positions.contains_key(&pos) && record.mapq() >= min_quality {
-            if let Some(base) = record.seq().as_bytes().first().map(|&b| b as char) {
-                coverage.entry(pos).or_default().push(base);
+        if record.mapq() >= min_quality {
+            let sequence = record.seq().as_bytes();
+            for (read_pos, base) in sequence.iter().enumerate() {
+                let ref_pos = start_pos + read_pos as u32;
+                if positions.contains_key(&ref_pos) {
+                    coverage.entry(ref_pos).or_default().push(*base as char);
+                }
             }
         }
     }
@@ -309,12 +404,19 @@ fn collect_snps<'a>(
     haplogroup: &'a Haplogroup,
     positions: &mut HashMap<u32, Vec<(&'a str, &'a Snp)>>,
 ) {
+    println!("Processing haplogroup: {} with {} SNPs", haplogroup.name, haplogroup.snps.len());
     for snp in &haplogroup.snps {
+        println!("  SNP at pos {}: ancestral={}, derived={}, chrom={}, build={}",
+                 snp.position, snp.ancestral, snp.derived, snp.chromosome, snp.build);
+
         if is_valid_snp(snp) {
             positions
                 .entry(snp.position)
                 .or_default()
                 .push((&haplogroup.name, snp));
+        } else {
+            println!("  Invalid SNP: pos={}, chrom={}, build={}",
+                     snp.position, snp.chromosome, snp.build);
         }
     }
 
@@ -325,8 +427,8 @@ fn collect_snps<'a>(
 
 fn is_valid_snp(snp: &Snp) -> bool {
     match snp.chromosome.as_str() {
-        "MT" => true,
-        "Y" => snp.build == "hg38",
+        "chrM" => true,
+        "chrY" => snp.build == "hg38",
         _ => false,
     }
 }
@@ -347,9 +449,14 @@ fn calculate_haplogroup_score(
         .collect();
     let total_snps = valid_snps.len();
 
+    println!("Scoring haplogroup: {} (total SNPs: {})", haplogroup.name, total_snps);
+
     for snp in valid_snps {
-        if let Some((called_base, _, _)) = snp_calls.get(&snp.position) {
+        if let Some((called_base, depth, freq)) = snp_calls.get(&snp.position) {
             called_snps += 1;
+            println!("Position {}: called={}, ancestral={}, derived={} (depth={}, freq={})",
+                     snp.position, called_base, snp.ancestral, snp.derived, depth, freq);
+
             if *called_base == snp.derived.chars().next().unwrap() {
                 matching_snps += 1;
             } else if *called_base == snp.ancestral.chars().next().unwrap() {
