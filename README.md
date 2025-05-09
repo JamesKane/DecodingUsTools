@@ -28,11 +28,20 @@ decodingus-tools find-y-branch --reference <REFERENCE_FILE> <BAM_FILE> <OUTPUT_F
 
 Find the closest YDNA branch
 
+|Haplogroup|Score|Matching_SNPs|Mismatching_SNPs|Ancestral_Matches|No_Calls|Total_SNPs|Cumulative_SNPs|Depth|
+|----------|------|-------------|----------------|-----------------|--------|----------|---------------|-----|
+|R-FGC29071|2.75|3|0|2|1|9|1917|53|
+|R-FGC29067|3.08|7|0|0|2|4|1911|52|
+
 ```shell
 decodingus-tools find-mt-branch --reference <REFERENCE_FILE> <BAM_FILE> <OUTPUT_FILE>
 ```
 
 Find the closest mtDNA branch
+
+|Haplogroup| Score |Matching_SNPs|Mismatching_SNPs|Ancestral_Matches|No_Calls|Total_SNPs|Cumulative_SNPs|Depth|
+|----------|-------|-------------|----------------|-----------------|--------|----------|---------------|-----|
+|U5a1b1g|1.65|1|0|0|0|1|55|15|
 
 ### Caching
 The branch finding algorithms store files in these locations:
