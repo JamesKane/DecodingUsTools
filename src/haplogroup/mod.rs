@@ -2,9 +2,18 @@ use crate::utils::cache::{TreeCache, TreeType};
 use indicatif::{ProgressBar, ProgressStyle};
 use rust_htslib::{bam::IndexedReader, bam::Read};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufWriter, Write};
+
+const BAM_CMATCH: u32 = 0;
+const BAM_CINS: u32 = 1;
+const BAM_CDEL: u32 = 2;
+const BAM_CREF_SKIP: u32 = 3;
+const BAM_CSOFT_CLIP: u32 = 4;
+const BAM_CEQUAL: u32 = 7;
+const BAM_CDIFF: u32 = 8;
+
 
 macro_rules! debug_println {
     ($($arg:tt)*) => {
@@ -211,7 +220,7 @@ impl HaplogroupTree {
     }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct Snp {
     position: u32,
     ancestral: String,
@@ -222,14 +231,27 @@ pub struct Snp {
     build: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 struct HaplogroupScore {
-    matches: u32,
-    mismatches: u32,
-    ancestral_matches: u32,
-    no_calls: u32,
-    total_snps: u32,
+    matches: usize,
+    ancestral_matches: usize,
+    no_calls: usize,
+    total_snps: usize,
     score: f64,
+    depth: usize, // Added depth field
+}
+
+impl Default for HaplogroupScore {
+    fn default() -> Self {
+        Self {
+            matches: 0,
+            ancestral_matches: 0,
+            no_calls: 0,
+            total_snps: 0,
+            score: 0.0,
+            depth: 0,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -357,16 +379,28 @@ pub fn analyze_haplogroup(
 
     // Score haplogroups
     let mut scores = Vec::new();
-    calculate_haplogroup_score(&tree, &snp_calls, &mut scores, None);
+    calculate_haplogroup_score(&tree, &snp_calls, &mut scores, None, 0);
 
     // Sort and write results
     scores.sort_by(|a, b| {
-        let score_diff = b.score.partial_cmp(&a.score).unwrap();
-        if (b.score - a.score).abs() < 0.1 {
-            // If scores are very close, compare by number of matching SNPs
-            b.matching_snps.cmp(&a.matching_snps)
-        } else {
-            score_diff
+        // First compare scores with NaN handling
+        match (a.score.is_nan(), b.score.is_nan()) {
+            (true, true) => std::cmp::Ordering::Equal,
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            (false, false) => {
+                match b
+                    .score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                {
+                    std::cmp::Ordering::Equal => {
+                        // If scores are equal, compare by matching SNPs
+                        b.matching_snps.cmp(&a.matching_snps)
+                    }
+                    ord => ord,
+                }
+            }
         }
     });
 
@@ -390,12 +424,10 @@ pub fn analyze_haplogroup(
         )?;
     }
 
-
     progress.finish_with_message("Analysis complete!");
     Ok(())
 }
 
-// Helper function to process a region of the BAM file
 fn process_region<R: Read>(
     bam: &mut R,
     positions: &HashMap<u32, Vec<(&str, &Snp)>>,
@@ -404,7 +436,21 @@ fn process_region<R: Read>(
     snp_calls: &mut HashMap<u32, (char, u32, f64)>,
     progress: &ProgressBar,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut coverage: HashMap<u32, Vec<char>> = HashMap::new();
+    // Debug logging for positions we're specifically interested in
+    let debug_positions = HashSet::from([2968390u32, 15773697u32]);
+    for pos in &debug_positions {
+        if let Some(snps) = positions.get(pos) {
+            println!("\nDEBUG: SNP info for position {}:", pos);
+            for (branch, snp) in snps {
+                println!("  Branch: {}", branch);
+                println!("  Ancestral: {}", snp.ancestral);
+                println!("  Derived: {}", snp.derived);
+                println!("  Position: {}", snp.position);
+            }
+        }
+    }
+
+    let mut coverage: HashMap<u32, Vec<u8>> = HashMap::new();
 
     for r in bam.records() {
         let record = r?;
@@ -413,27 +459,128 @@ fn process_region<R: Read>(
 
         if record.mapq() >= min_quality {
             let sequence = record.seq().as_bytes();
-            for (read_pos, base) in sequence.iter().enumerate() {
-                let ref_pos = start_pos + read_pos as u32;
-                if positions.contains_key(&ref_pos) {
-                    coverage.entry(ref_pos).or_default().push(*base as char);
+            let cigar = record.cigar();
+            let mut ref_pos = start_pos;
+            let mut read_pos = 0;
+
+            for op in cigar.iter() {
+                match op.char() {
+                    'M' | '=' | 'X' => {
+                        let len = op.len() as usize;
+                        for i in 0..len {
+                            if positions.contains_key(&ref_pos) {
+                                if debug_positions.contains(&ref_pos) {
+                                    let base_index = read_pos + i;
+
+                                    // Get sequence context (7 bases centered on our position)
+                                    let context_str = if base_index >= 3 && base_index + 4 <= sequence.len() {
+                                        let context = if record.is_reverse() {
+                                            // For reverse reads, we need to:
+                                            // 1. Take the context
+                                            // 2. Reverse complement it
+                                            let mut context = sequence[base_index-3..base_index+4].to_vec();
+                                            context.reverse();
+                                            for b in &mut context {
+                                                *b = match *b {
+                                                    b'A' => b'T',
+                                                    b'T' => b'A',
+                                                    b'C' => b'G',
+                                                    b'G' => b'C',
+                                                    x => x,
+                                                };
+                                            }
+                                            context
+                                        } else {
+                                            sequence[base_index-3..base_index+4].to_vec()
+                                        };
+                                        String::from_utf8_lossy(&context).into_owned()
+                                    } else {
+                                        "context unavailable".to_string()
+                                    };
+
+                                    // Get the actual base being added (reverse complemented if needed)
+                                    let raw_base = sequence[base_index];
+                                    let final_base = if record.is_reverse() {
+                                        match raw_base {
+                                            b'A' => b'T',
+                                            b'T' => b'A',
+                                            b'C' => b'G',
+                                            b'G' => b'C',
+                                            x => x,
+                                        }
+                                    } else {
+                                        raw_base
+                                    };
+
+                                    println!("DEBUG: Full read info for position {}:", ref_pos);
+                                    println!("  Read name: {}", String::from_utf8_lossy(record.qname()));
+                                    println!("  Is reverse complemented: {}", record.is_reverse());
+                                    println!("  Raw base at position: {}", char::from(raw_base));
+                                    println!("  Final base being added: {}", char::from(final_base));
+                                    println!("  Sequence context: {}", context_str);
+                                }
+
+                                // Add the properly oriented base to coverage
+                                let base = if record.is_reverse() {
+                                    match sequence[read_pos + i] {
+                                        b'A' => b'T',
+                                        b'T' => b'A',
+                                        b'C' => b'G',
+                                        b'G' => b'C',
+                                        x => x,
+                                    }
+                                } else {
+                                    sequence[read_pos + i]
+                                };
+
+                                coverage.entry(ref_pos)
+                                    .or_default()
+                                    .push(base);
+                            }
+                            ref_pos += 1;
+                        }
+                        read_pos += len;
+                    }
+                    'D' | 'N' => {
+                        ref_pos += op.len() as u32;
+                    }
+                    'I' | 'S' => {
+                        read_pos += op.len() as usize;
+                    }
+                    _ => {}
                 }
             }
         }
     }
-
-    // Second pass: analyze coverage
+    
+    // Analyze coverage and make base calls
     for (pos, bases) in coverage {
         if bases.len() >= min_depth as usize {
             let mut base_counts: HashMap<char, u32> = HashMap::new();
+
+            // Convert bases to uppercase chars for consistent comparison
             for base in bases {
-                *base_counts.entry(base).or_insert(0) += 1;
+                let base_char = match base {
+                    b'a' | b'A' => 'A',
+                    b'c' | b'C' => 'C',
+                    b'g' | b'G' => 'G',
+                    b't' | b'T' => 'T',
+                    _ => continue, // Skip non-ACGT bases
+                };
+                *base_counts.entry(base_char).or_insert(0) += 1;
             }
 
-            if let Some((base, count)) = base_counts.iter().max_by_key(|&(_, count)| count) {
-                let freq = *count as f64 / base_counts.values().sum::<u32>() as f64;
-                if freq >= 0.8 {
-                    snp_calls.insert(pos, (*base, base_counts.values().sum(), freq));
+            if let Some((base, count)) = base_counts.iter()
+                .max_by_key(|&(_, count)| count) {
+                let total = base_counts.values().sum::<u32>();
+                let freq = *count as f64 / total as f64;
+
+                // Only make a call if we have sufficient frequency
+                if freq >= 0.7 {
+                    if debug_positions.contains(&pos) {
+                        println!("DEBUG: Position {} - Final call: {} (freq: {:.2})", pos, base, freq);
+                    }
+                    snp_calls.insert(pos, (*base, total, freq));
                 }
             }
         }
@@ -454,7 +601,11 @@ fn collect_snps<'a>(
     for snp in &haplogroup.snps {
         debug_println!(
             "  SNP at pos {}: ancestral={}, derived={}, chrom={}, build={}",
-            snp.position, snp.ancestral, snp.derived, snp.chromosome, snp.build
+            snp.position,
+            snp.ancestral,
+            snp.derived,
+            snp.chromosome,
+            snp.build
         );
 
         if is_valid_snp(snp) {
@@ -465,7 +616,9 @@ fn collect_snps<'a>(
         } else {
             debug_println!(
                 "  Invalid SNP: pos={}, chrom={}, build={}",
-                snp.position, snp.chromosome, snp.build
+                snp.position,
+                snp.chromosome,
+                snp.build
             );
         }
     }
@@ -488,58 +641,190 @@ fn calculate_haplogroup_score(
     snp_calls: &HashMap<u32, (char, u32, f64)>,
     scores: &mut Vec<HaplogroupResult>,
     parent_score: Option<HaplogroupScore>,
+    consecutive_all_negative: u32,
 ) -> HaplogroupScore {
-    let mut current_score = parent_score.unwrap_or_default();
+    // Initialize a fresh score for this branch
+    let mut current_score = HaplogroupScore::default();
+    current_score.depth = parent_score.map_or(0, |p| p.depth + 1);
 
-    let valid_snps: Vec<_> = haplogroup.snps.iter().filter(|snp| is_valid_snp(snp)).collect();
 
-    for snp in valid_snps.iter() {
-        current_score.total_snps += 1;
+    let is_target = haplogroup.name.contains("P310") ||
+        haplogroup.name.contains("L21") ||
+        haplogroup.name.contains("DF13") ||
+        haplogroup.name.contains("L151") ||  // Add immediate downstream from P310
+        haplogroup.name.contains("P312");    // Add immediate downstream from P310
 
-        match snp_calls.get(&snp.position) {
-            Some((called_base, _depth, _freq)) => {
-                if *called_base == snp.derived.chars().next().unwrap() {
-                    current_score.matches += 1;
-                } else if *called_base == snp.ancestral.chars().next().unwrap() {
-                    current_score.ancestral_matches += 1;
+    // Count defining SNPs for this branch
+    let defining_snps: Vec<_> = haplogroup.snps.iter()
+        .filter(|snp| is_valid_snp(snp))
+        .collect();
+
+    let mut branch_derived = 0;
+    let mut branch_ancestral = 0;
+    let mut branch_no_calls = 0;
+    let mut branch_low_quality = 0;
+
+
+    if is_target {
+        println!("\n=== Analyzing branch {} ===", haplogroup.name);
+        println!("Number of defining SNPs: {}", defining_snps.len());
+    }
+
+    // Process defining SNPs checking specifically for derived mutations
+    for snp in &defining_snps {
+        if let Some((called_base, depth, freq)) = snp_calls.get(&snp.position) {
+            if *depth >= 4 {
+                let derived_base = snp.derived.chars().next().unwrap();
+                let ancestral_base = snp.ancestral.chars().next().unwrap();
+
+                if is_target {
+                    print!("SNP at {}: ancestral={} derived={} called={} depth={} freq={:.2}",
+                           snp.position, ancestral_base, derived_base, called_base, depth, freq);
+                }
+
+                if *called_base == derived_base {
+                    // Exact derived match
+                    if *freq >= 0.9 {
+                        branch_derived += 1;
+                        if is_target {
+                            println!(" → HIGH confidence derived");
+                        }
+                    } else if *freq >= 0.7 {
+                        branch_derived += 1;
+                        if is_target {
+                            println!(" → MEDIUM confidence derived");
+                        }
+                    } else {
+                        branch_low_quality += 1;
+                        if is_target {
+                            println!(" → LOW quality (not counted)");
+                        }
+                    }
+                } else if *called_base == ancestral_base {
+                    branch_ancestral += 1;
+                    if is_target {
+                        println!(" → Ancestral state");
+                    }
+                } else if *freq >= 0.9 {
+                    // Different mutation but high quality - count as derived
+                    branch_derived += 1;
+                    if is_target {
+                        println!(" → Different mutation but HIGH confidence non-ancestral");
+                    }
+                } else if *freq >= 0.7 {
+                    // Different mutation but medium quality - count as derived
+                    branch_derived += 1;
+                    if is_target {
+                        println!(" → Different mutation but MEDIUM confidence non-ancestral");
+                    }
                 } else {
-                    current_score.mismatches += 1;
+                    branch_low_quality += 1;
+                    if is_target {
+                        println!(" → Different mutation but LOW quality (not counted)");
+                    }
+                }
+            } else {
+                branch_no_calls += 1;
+                if is_target {
+                    println!("Position {}: Insufficient depth ({} < 4)", snp.position, depth);
                 }
             }
-            None => {
-                current_score.no_calls += 1;
+        } else {
+            branch_no_calls += 1;
+            if is_target {
+                println!("Position {}: No call available", snp.position);
             }
         }
     }
 
-    // Calculate score with penalty for ancestral matches, considering only called positions
-    let called_positions = current_score.total_snps - current_score.no_calls;
-    let score = if called_positions > 0 {
-        let base_score = current_score.matches as f64 / called_positions as f64;
-        // Apply penalty for ancestral matches
-        base_score * (1.0 - (current_score.ancestral_matches as f64 / called_positions as f64))
-    } else {
-        0.0
-    };
-    current_score.score = score;
+    // Early exit if no derived mutations found in a branch with sufficient SNPs
+    if branch_derived == 0 && defining_snps.len() >= 5 {
+        if is_target {
+            println!("\n❌ Branch {} REJECTED", haplogroup.name);
+            println!("   No derived mutations found in {} defining SNPs", defining_snps.len());
+            println!("   Ancestral matches: {}", branch_ancestral);
+            println!("   No calls: {}", branch_no_calls);
+            println!("   Low quality calls: {}", branch_low_quality);
+            println!("   This branch will be scored 0.0");
+        }
+        current_score.score = 0.0;
+        return current_score;
+    }
 
-    scores.push(HaplogroupResult {
-        name: haplogroup.name.clone(),
-        score,
-        matching_snps: current_score.matches,
-        mismatching_snps: current_score.mismatches,
-        ancestral_matches: current_score.ancestral_matches,
-        no_calls: current_score.no_calls,
-        total_snps: current_score.total_snps,
-    });
 
+    // Calculate base score from derived matches
+    let total_called = branch_derived + branch_ancestral;
+    if total_called > 0 {
+        let derived_ratio = branch_derived as f64 / total_called as f64;
+        let coverage_ratio = total_called as f64 / defining_snps.len() as f64;
+
+        // Calculate initial base score from derived ratio
+        let mut branch_score = derived_ratio;
+
+        // Use cumulative counts for confidence calculations
+        let total_snps = current_score.total_snps + defining_snps.len();
+        let total_called = current_score.matches + current_score.ancestral_matches + branch_derived + branch_ancestral;
+        let cumulative_coverage = if total_snps > 0 {
+            total_called as f64 / total_snps as f64
+        } else {
+            0.0
+        };
+
+        let branch_confidence = match (total_snps, cumulative_coverage) {
+            (n, c) if n >= 15 && c >= 0.7 => 1.2,
+            (n, c) if n >= 10 && c >= 0.6 => 1.1,
+            (n, c) if n >= 5 && c >= 0.5 => 1.0,
+            _ => 0.8,
+        };
+
+        let match_confidence = match derived_ratio {
+            r if r >= 0.8 => 1.2,
+            r if r >= 0.7 => 1.1,
+            r if r >= 0.6 => 1.0,
+            r if r >= 0.5 => 0.8,
+            _ => 0.6,
+        };
+
+        current_score.score = branch_score * branch_confidence * match_confidence;
+
+
+        if is_target {
+            println!("✓ Branch confidence: {:.3}", branch_confidence);
+            println!("✓ Match confidence: {:.3}", match_confidence);
+            println!("✓ Final score: {:.3}", current_score.score);
+            println!("===============================");
+        }
+    }
+
+    // Update running totals
+    current_score.matches += branch_derived;
+    current_score.ancestral_matches += branch_ancestral;
+    current_score.no_calls += branch_no_calls;
+    current_score.total_snps += defining_snps.len();
+
+    // Process children
     for child in &haplogroup.children {
-        calculate_haplogroup_score(child, snp_calls, scores, Some(current_score.clone()));
+        let child_score = calculate_haplogroup_score(
+            child,
+            snp_calls,
+            scores,
+            Some(current_score.clone()),
+            consecutive_all_negative
+        );
+
+        scores.push(HaplogroupResult {
+            name: child.name.clone(),
+            score: child_score.score,
+            matching_snps: child_score.matches.try_into().unwrap_or(0),
+            mismatching_snps: child_score.ancestral_matches.try_into().unwrap_or(0),
+            ancestral_matches: child_score.ancestral_matches.try_into().unwrap_or(0),
+            no_calls: child_score.no_calls.try_into().unwrap_or(0),
+            total_snps: child_score.total_snps.try_into().unwrap_or(0),
+        });
     }
 
     current_score
 }
-
 
 fn validate_hg38_reference<R: Read>(bam: &R) -> Result<(), Box<dyn std::error::Error>> {
     let header = bam.header();
