@@ -471,57 +471,48 @@ fn process_region<R: Read>(
                     'M' | '=' | 'X' => {
                         let len = op.len() as usize;
                         for i in 0..len {
-                            if positions.contains_key(&ref_pos) {
+                            // Add 1 to ref_pos when checking positions HashMap (1-based) but use original for FASTA
+                            let vcf_pos = ref_pos + 1;
+                            if positions.contains_key(&vcf_pos) && read_pos + i < sequence.len() {
                                 let base_index = read_pos + i;
-                                let raw_base = sequence[base_index].to_ascii_uppercase();
+                                let base = sequence[base_index].to_ascii_uppercase();
 
                                 if let Ok(_) = fasta.fetch(&ref_name, ref_pos as u64, (ref_pos + 1) as u64) {
                                     let mut ref_seq = Vec::new();
                                     fasta.read(&mut ref_seq)?;
                                     let ref_base = ref_seq.first().map(|&b| b.to_ascii_uppercase()).unwrap_or(b'N');
 
-                                    // Don't convert the base for reverse reads - BAM already handles this
-                                    let genomic_base = raw_base;
-
-                                    if debug_positions.contains(&ref_pos) {
-                                        let context_str = if base_index >= 3 && base_index + 4 <= sequence.len() {
-                                            let context = sequence[base_index-3..base_index+4].to_vec();
-                                            String::from_utf8_lossy(&context).into_owned()
-                                        } else {
-                                            "context unavailable".to_string()
-                                        };
-
-                                        println!("DEBUG: Full read info for position {}:", ref_pos);
+                                    if debug_positions.contains(&vcf_pos) {
+                                        println!("DEBUG: Full read info for position {}:", vcf_pos);
                                         println!("  Read name: {}", String::from_utf8_lossy(record.qname()));
                                         println!("  Is reverse complemented: {}", record.is_reverse());
                                         println!("  Reference base: {}", char::from(ref_base));
-                                        println!("  Sequenced base: {}", char::from(raw_base));
-                                        println!("  Genomic base: {}", char::from(genomic_base));
-                                        println!("  Raw context: {}", context_str);
+                                        println!("  Base: {}", char::from(base));
+                                        if let Some(snp_info) = positions.get(&vcf_pos) {
+                                            for (_, snp) in snp_info {
+                                                println!("  Expected mutation: {} -> {}", snp.ancestral, snp.derived);
+                                            }
+                                        }
                                     }
 
-                                    coverage.entry(ref_pos)
+                                    coverage.entry(vcf_pos)
                                         .or_default()
-                                        .push(genomic_base);
+                                        .push(base);
                                 }
                             }
                             ref_pos += 1;
                         }
                         read_pos += len;
                     }
-                    'D' | 'N' => {
-                        ref_pos += op.len() as u32;
-                    }
-                    'I' | 'S' => {
-                        read_pos += op.len() as usize;
-                    }
+                    'D' | 'N' => { ref_pos += op.len() as u32; }
+                    'I' | 'S' => { read_pos += op.len() as usize; }
                     _ => {}
                 }
             }
         }
     }
 
-    // Process coverage and make base calls
+    // Rest of the function remains the same
     for (pos, bases) in coverage {
         if bases.len() >= min_depth as usize {
             let mut base_counts: HashMap<char, u32> = HashMap::new();
@@ -549,7 +540,6 @@ fn process_region<R: Read>(
 
     Ok(())
 }
-
 fn collect_snps<'a>(
     haplogroup: &'a Haplogroup,
     positions: &mut HashMap<u32, Vec<(&'a str, &'a Snp)>>,
