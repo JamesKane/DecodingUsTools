@@ -151,11 +151,16 @@ pub fn analyze_haplogroup(
     let tree_cache = TreeCache::new(tree_type)?;
     let tree_json: HaplogroupTree = tree_cache.get_tree()?;
 
+    let root_count = tree_json.all_nodes.values().filter(|node| node.parent_id == 0).count();
+    if root_count > 1 {
+        return Err("Multiple root nodes found in tree".into());
+    }
+
     // Find the root node (usually has parent_id = 0)
     let root_node = tree_json
         .all_nodes
         .values()
-        .find(|node| node.is_root)
+        .find(|node| node.parent_id == 0)
         .ok_or("No root node found")?;
 
     // Build the tree structure starting from root
