@@ -36,20 +36,23 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         cli::Commands::FindYBranch {
             bam_file,
+            reference_file,
             output_file,
             min_depth,
             min_quality,
         } => {
-            commands::find_y_branch::run(bam_file, output_file, min_depth, min_quality)?;
+            commands::find_y_branch::run(bam_file, reference_file, output_file, min_depth, min_quality)?;
         }
         cli::Commands::FindMtBranch {
             bam_file,
+            reference_file,
             output_file,
             min_depth,
             min_quality,
         } => {
-            commands::find_mt_branch::run(bam_file, output_file, min_depth, min_quality)?;
+            commands::find_mt_branch::run(bam_file, reference_file, output_file, min_depth, min_quality)?;
         }
+
     }
 
     Ok(())

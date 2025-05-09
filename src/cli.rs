@@ -55,6 +55,9 @@ pub enum Commands {
     FindYBranch {
         /// Input BAM file
         bam_file: String,
+        /// Reference FASTA file (hg38)
+        #[arg(short = 'r', long = "reference")]
+        reference_file: String,
         /// Output file for haplogroup results
         output_file: String,
         /// Minimum read depth for SNP calling (default: 10)
@@ -69,6 +72,9 @@ pub enum Commands {
     FindMtBranch {
         /// Input BAM file
         bam_file: String,
+        /// Reference FASTA file (hg38)
+        #[arg(short = 'r', long = "reference")]
+        reference_file: String,
         /// Output file for haplogroup results
         output_file: String,
         /// Minimum read depth for SNP calling (default: 10)
@@ -78,4 +84,5 @@ pub enum Commands {
         #[arg(long, default_value = "20")]
         min_quality: u8,
     },
+
 }

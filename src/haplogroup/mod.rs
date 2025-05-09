@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
+
 const BAM_CMATCH: u32 = 0;
 const BAM_CINS: u32 = 1;
 const BAM_CDEL: u32 = 2;
@@ -267,11 +268,15 @@ struct HaplogroupResult {
 
 pub fn analyze_haplogroup(
     bam_file: String,
+    reference_file: String,
     output_file: String,
     min_depth: u32,
     min_quality: u8,
     tree_type: TreeType,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize the FASTA reader
+    let mut fasta_reader = bio::io::fasta::IndexedReader::from_file(&reference_file)?;
+
     let progress = ProgressBar::new_spinner();
     progress.set_style(
         ProgressStyle::default_spinner()
@@ -330,6 +335,8 @@ pub fn analyze_haplogroup(
         .unwrap()
         .progress_chars("#>-");
 
+    let header = bam.header().clone();
+
     // Process one chromosome based on the tree type
     if need_y {
         let tid = bam.header().tid(b"chrY").ok_or("chrY not found in BAM")?;
@@ -344,6 +351,8 @@ pub fn analyze_haplogroup(
         bam.fetch(&region)?;
         process_region(
             &mut bam,
+            &header,
+            &mut fasta_reader,
             &positions,
             min_depth,
             min_quality,
@@ -365,6 +374,8 @@ pub fn analyze_haplogroup(
         bam.fetch(&region)?;
         process_region(
             &mut bam,
+            &header,
+            &mut fasta_reader,
             &positions,
             min_depth,
             min_quality,
@@ -430,26 +441,15 @@ pub fn analyze_haplogroup(
 
 fn process_region<R: Read>(
     bam: &mut R,
+    header: &rust_htslib::bam::HeaderView,
+    fasta: &mut bio::io::fasta::IndexedReader<File>,
     positions: &HashMap<u32, Vec<(&str, &Snp)>>,
     min_depth: u32,
     min_quality: u8,
     snp_calls: &mut HashMap<u32, (char, u32, f64)>,
     progress: &ProgressBar,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Debug logging for positions we're specifically interested in
     let debug_positions = HashSet::from([2968390u32, 15773697u32]);
-    for pos in &debug_positions {
-        if let Some(snps) = positions.get(pos) {
-            println!("\nDEBUG: SNP info for position {}:", pos);
-            for (branch, snp) in snps {
-                println!("  Branch: {}", branch);
-                println!("  Ancestral: {}", snp.ancestral);
-                println!("  Derived: {}", snp.derived);
-                println!("  Position: {}", snp.position);
-            }
-        }
-    }
-
     let mut coverage: HashMap<u32, Vec<u8>> = HashMap::new();
 
     for r in bam.records() {
@@ -463,79 +463,47 @@ fn process_region<R: Read>(
             let mut ref_pos = start_pos;
             let mut read_pos = 0;
 
+            let tid = record.tid();
+            let ref_name = String::from_utf8_lossy(header.tid2name(tid as u32));
+
             for op in cigar.iter() {
                 match op.char() {
                     'M' | '=' | 'X' => {
                         let len = op.len() as usize;
                         for i in 0..len {
                             if positions.contains_key(&ref_pos) {
-                                if debug_positions.contains(&ref_pos) {
-                                    let base_index = read_pos + i;
+                                let base_index = read_pos + i;
+                                let raw_base = sequence[base_index].to_ascii_uppercase();
 
-                                    // Get sequence context (7 bases centered on our position)
-                                    let context_str = if base_index >= 3 && base_index + 4 <= sequence.len() {
-                                        let context = if record.is_reverse() {
-                                            // For reverse reads, we need to:
-                                            // 1. Take the context
-                                            // 2. Reverse complement it
-                                            let mut context = sequence[base_index-3..base_index+4].to_vec();
-                                            context.reverse();
-                                            for b in &mut context {
-                                                *b = match *b {
-                                                    b'A' => b'T',
-                                                    b'T' => b'A',
-                                                    b'C' => b'G',
-                                                    b'G' => b'C',
-                                                    x => x,
-                                                };
-                                            }
-                                            context
+                                if let Ok(_) = fasta.fetch(&ref_name, ref_pos as u64, (ref_pos + 1) as u64) {
+                                    let mut ref_seq = Vec::new();
+                                    fasta.read(&mut ref_seq)?;
+                                    let ref_base = ref_seq.first().map(|&b| b.to_ascii_uppercase()).unwrap_or(b'N');
+
+                                    // Don't convert the base for reverse reads - BAM already handles this
+                                    let genomic_base = raw_base;
+
+                                    if debug_positions.contains(&ref_pos) {
+                                        let context_str = if base_index >= 3 && base_index + 4 <= sequence.len() {
+                                            let context = sequence[base_index-3..base_index+4].to_vec();
+                                            String::from_utf8_lossy(&context).into_owned()
                                         } else {
-                                            sequence[base_index-3..base_index+4].to_vec()
+                                            "context unavailable".to_string()
                                         };
-                                        String::from_utf8_lossy(&context).into_owned()
-                                    } else {
-                                        "context unavailable".to_string()
-                                    };
 
-                                    // Get the actual base being added (reverse complemented if needed)
-                                    let raw_base = sequence[base_index];
-                                    let final_base = if record.is_reverse() {
-                                        match raw_base {
-                                            b'A' => b'T',
-                                            b'T' => b'A',
-                                            b'C' => b'G',
-                                            b'G' => b'C',
-                                            x => x,
-                                        }
-                                    } else {
-                                        raw_base
-                                    };
-
-                                    println!("DEBUG: Full read info for position {}:", ref_pos);
-                                    println!("  Read name: {}", String::from_utf8_lossy(record.qname()));
-                                    println!("  Is reverse complemented: {}", record.is_reverse());
-                                    println!("  Raw base at position: {}", char::from(raw_base));
-                                    println!("  Final base being added: {}", char::from(final_base));
-                                    println!("  Sequence context: {}", context_str);
-                                }
-
-                                // Add the properly oriented base to coverage
-                                let base = if record.is_reverse() {
-                                    match sequence[read_pos + i] {
-                                        b'A' => b'T',
-                                        b'T' => b'A',
-                                        b'C' => b'G',
-                                        b'G' => b'C',
-                                        x => x,
+                                        println!("DEBUG: Full read info for position {}:", ref_pos);
+                                        println!("  Read name: {}", String::from_utf8_lossy(record.qname()));
+                                        println!("  Is reverse complemented: {}", record.is_reverse());
+                                        println!("  Reference base: {}", char::from(ref_base));
+                                        println!("  Sequenced base: {}", char::from(raw_base));
+                                        println!("  Genomic base: {}", char::from(genomic_base));
+                                        println!("  Raw context: {}", context_str);
                                     }
-                                } else {
-                                    sequence[read_pos + i]
-                                };
 
-                                coverage.entry(ref_pos)
-                                    .or_default()
-                                    .push(base);
+                                    coverage.entry(ref_pos)
+                                        .or_default()
+                                        .push(genomic_base);
+                                }
                             }
                             ref_pos += 1;
                         }
@@ -552,35 +520,28 @@ fn process_region<R: Read>(
             }
         }
     }
-    
-    // Analyze coverage and make base calls
+
+    // Process coverage and make base calls
     for (pos, bases) in coverage {
         if bases.len() >= min_depth as usize {
             let mut base_counts: HashMap<char, u32> = HashMap::new();
 
-            // Convert bases to uppercase chars for consistent comparison
-            for base in bases {
-                let base_char = match base {
-                    b'a' | b'A' => 'A',
-                    b'c' | b'C' => 'C',
-                    b'g' | b'G' => 'G',
-                    b't' | b'T' => 'T',
-                    _ => continue, // Skip non-ACGT bases
-                };
-                *base_counts.entry(base_char).or_insert(0) += 1;
+            for &base in &bases {
+                *base_counts.entry(base as char).or_insert(0) += 1;
             }
 
-            if let Some((base, count)) = base_counts.iter()
-                .max_by_key(|&(_, count)| count) {
-                let total = base_counts.values().sum::<u32>();
-                let freq = *count as f64 / total as f64;
+            if let Some((&base, &count)) = base_counts.iter().max_by_key(|&(_, count)| count) {
+                let total = bases.len() as u32;
+                let freq = count as f64 / total as f64;
 
-                // Only make a call if we have sufficient frequency
                 if freq >= 0.7 {
                     if debug_positions.contains(&pos) {
-                        println!("DEBUG: Position {} - Final call: {} (freq: {:.2})", pos, base, freq);
+                        println!("DEBUG: Position {} - Final consensus call:", pos);
+                        println!("  Called base: {} (frequency: {:.2})", base, freq);
+                        println!("  Base counts: {:?}", base_counts);
+                        println!("  Total reads: {}", total);
                     }
-                    snp_calls.insert(pos, (*base, total, freq));
+                    snp_calls.insert(pos, (base, total, freq));
                 }
             }
         }
