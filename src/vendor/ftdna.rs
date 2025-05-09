@@ -108,8 +108,8 @@ impl TreeProvider for FtdnaTreeProvider {
 
     fn cache_prefix(&self, tree_type: TreeType) -> &str {
         match tree_type {
-            TreeType::YDNA => "ytree",
-            TreeType::MTDNA => "mttree",
+            TreeType::YDNA => "ftdna-ytree",
+            TreeType::MTDNA => "ftdna-mttree",
         }
     }
 
