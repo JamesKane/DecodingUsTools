@@ -226,8 +226,21 @@ pub struct Snp {
 struct HaplogroupScore {
     matches: u32,
     mismatches: u32,
+    ancestral_matches: u32,
+    no_calls: u32,
     total_snps: u32,
     score: f64,
+}
+
+#[derive(Debug)]
+struct HaplogroupResult {
+    name: String,
+    score: f64,
+    matching_snps: u32,
+    mismatching_snps: u32,
+    ancestral_matches: u32,
+    no_calls: u32,
+    total_snps: u32,
 }
 
 pub fn analyze_haplogroup(
@@ -348,20 +361,35 @@ pub fn analyze_haplogroup(
 
     // Sort and write results
     scores.sort_by(|a, b| {
-        let score_diff = b.1.partial_cmp(&a.1).unwrap();
-        if (b.1 - a.1).abs() < 0.1 {
+        let score_diff = b.score.partial_cmp(&a.score).unwrap();
+        if (b.score - a.score).abs() < 0.1 {
             // If scores are very close, compare by number of matching SNPs
-            b.2.cmp(&a.2)
+            b.matching_snps.cmp(&a.matching_snps)
         } else {
             score_diff
         }
     });
 
+    // Update the report writing section in analyze_haplogroup:
     let mut writer = BufWriter::new(File::create(output_file)?);
-    writeln!(writer, "Haplogroup\tScore\tMatching_SNPs\tTotal_SNPs")?;
-    for (name, score, matching, total) in scores {
-        writeln!(writer, "{}\t{:.4}\t{}\t{}", name, score, matching, total)?;
+    writeln!(
+        writer,
+        "Haplogroup\tScore\tMatching_SNPs\tMismatching_SNPs\tAncestral_Matches\tNo_Calls\tTotal_SNPs"
+    )?;
+    for result in scores {
+        writeln!(
+            writer,
+            "{}\t{:.4}\t{}\t{}\t{}\t{}\t{}",
+            result.name,
+            result.score,
+            result.matching_snps,
+            result.mismatching_snps,
+            result.ancestral_matches,
+            result.no_calls,
+            result.total_snps
+        )?;
     }
+
 
     progress.finish_with_message("Analysis complete!");
     Ok(())
@@ -458,44 +486,53 @@ fn is_valid_snp(snp: &Snp) -> bool {
 fn calculate_haplogroup_score(
     haplogroup: &Haplogroup,
     snp_calls: &HashMap<u32, (char, u32, f64)>,
-    scores: &mut Vec<(String, f64, u32, u32)>,
+    scores: &mut Vec<HaplogroupResult>,
     parent_score: Option<HaplogroupScore>,
 ) -> HaplogroupScore {
-    // Start with parent scores if they exist, or create new score
     let mut current_score = parent_score.unwrap_or_default();
 
-    // Add current haplogroup's SNPs to the score
     let valid_snps: Vec<_> = haplogroup.snps.iter().filter(|snp| is_valid_snp(snp)).collect();
 
     for snp in valid_snps.iter() {
-        if let Some((called_base, _depth, _freq)) = snp_calls.get(&snp.position) {
-            current_score.total_snps += 1;
+        current_score.total_snps += 1;
 
-            if *called_base == snp.derived.chars().next().unwrap() {
-                current_score.matches += 1;
-            } else {
-                current_score.mismatches += 1;
+        match snp_calls.get(&snp.position) {
+            Some((called_base, _depth, _freq)) => {
+                if *called_base == snp.derived.chars().next().unwrap() {
+                    current_score.matches += 1;
+                } else if *called_base == snp.ancestral.chars().next().unwrap() {
+                    current_score.ancestral_matches += 1;
+                } else {
+                    current_score.mismatches += 1;
+                }
+            }
+            None => {
+                current_score.no_calls += 1;
             }
         }
     }
 
-    // Calculate score
-    let score = if current_score.total_snps > 0 {
-        current_score.matches as f64 / current_score.total_snps as f64
+    // Calculate score with penalty for ancestral matches, considering only called positions
+    let called_positions = current_score.total_snps - current_score.no_calls;
+    let score = if called_positions > 0 {
+        let base_score = current_score.matches as f64 / called_positions as f64;
+        // Apply penalty for ancestral matches
+        base_score * (1.0 - (current_score.ancestral_matches as f64 / called_positions as f64))
     } else {
         0.0
     };
     current_score.score = score;
 
-    // Store result in simple format expected by existing code
-    scores.push((
-        haplogroup.name.clone(),
+    scores.push(HaplogroupResult {
+        name: haplogroup.name.clone(),
         score,
-        current_score.matches,
-        current_score.total_snps,
-    ));
+        matching_snps: current_score.matches,
+        mismatching_snps: current_score.mismatches,
+        ancestral_matches: current_score.ancestral_matches,
+        no_calls: current_score.no_calls,
+        total_snps: current_score.total_snps,
+    });
 
-    // Process children with current scores as their parent score
     for child in &haplogroup.children {
         calculate_haplogroup_score(child, snp_calls, scores, Some(current_score.clone()));
     }
