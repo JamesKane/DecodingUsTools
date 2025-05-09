@@ -262,6 +262,8 @@ struct HaplogroupResult {
     ancestral_matches: u32,
     no_calls: u32,
     total_snps: u32,
+    cumulative_snps: u32, // Total unique SNPs from root to this branch
+    depth: u32,
 }
 
 pub fn analyze_haplogroup(
@@ -390,48 +392,30 @@ pub fn analyze_haplogroup(
     let mut scores = Vec::new();
     calculate_haplogroup_score(&tree, &snp_calls, &mut scores, None, 0);
 
-    // Sort and write results
-    scores.sort_by(|a, b| {
-        // First compare scores with NaN handling
-        match (a.score.is_nan(), b.score.is_nan()) {
-            (true, true) => std::cmp::Ordering::Equal,
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            (false, false) => {
-                match b
-                    .score
-                    .partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                {
-                    std::cmp::Ordering::Equal => {
-                        // If scores are equal, compare by matching SNPs
-                        b.matching_snps.cmp(&a.matching_snps)
-                    }
-                    ord => ord,
-                }
-            }
-        }
-    });
+    let ordered_scores = collect_scored_paths(scores, &tree);
 
-    // Update the report writing section in analyze_haplogroup:
+    // Use ordered_scores for writing the report
     let mut writer = BufWriter::new(File::create(output_file)?);
     writeln!(
         writer,
-        "Haplogroup\tScore\tMatching_SNPs\tMismatching_SNPs\tAncestral_Matches\tNo_Calls\tTotal_SNPs"
+        "Haplogroup\tScore\tMatching_SNPs\tMismatching_SNPs\tAncestral_Matches\tNo_Calls\tTotal_SNPs\tCumulative_SNPs\tDepth"
     )?;
-    for result in scores {
+    for result in ordered_scores {
         writeln!(
             writer,
-            "{}\t{:.4}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             result.name,
             result.score,
             result.matching_snps,
             result.mismatching_snps,
             result.ancestral_matches,
             result.no_calls,
-            result.total_snps
+            result.total_snps,
+            result.cumulative_snps,
+            result.depth
         )?;
     }
+
 
     progress.finish_with_message("Analysis complete!");
     Ok(())
@@ -566,15 +550,32 @@ fn is_valid_snp(snp: &Snp) -> bool {
     }
 }
 
+#[derive(Debug)]
+struct PathInfo {
+    accumulated_snps: HashSet<u32>, // All SNP positions from root to current
+    depth: u32,
+}
+
 fn calculate_haplogroup_score(
     haplogroup: &Haplogroup,
     snp_calls: &HashMap<u32, (char, u32, f64)>,
     scores: &mut Vec<HaplogroupResult>,
-    parent_score: Option<HaplogroupScore>,
-    consecutive_all_negative: u32,
-) -> HaplogroupScore {
+    parent_info: Option<&(HaplogroupScore, HashSet<u32>)>, // Parent score and cumulative SNPs
+    depth: u32,
+) -> (HaplogroupScore, HashSet<u32>) {
     let mut current_score = HaplogroupScore::default();
-    current_score.depth = parent_score.map_or(0, |p| p.depth + 1);
+
+    // Initialize cumulative SNPs set from parent or empty
+    let mut cumulative_snps = parent_info
+        .map(|(_, snps)| snps.clone())
+        .unwrap_or_default();
+
+    // Add this branch's SNPs to cumulative set
+    for snp in &haplogroup.snps {
+        if is_valid_snp(snp) {
+            cumulative_snps.insert(snp.position);
+        }
+    }
 
     let defining_snps: Vec<_> = haplogroup
         .snps
@@ -753,12 +754,12 @@ fn calculate_haplogroup_score(
 
     // Process children
     for child in &haplogroup.children {
-        let child_score = calculate_haplogroup_score(
+        let (child_score, child_cumulative) = calculate_haplogroup_score(
             child,
             snp_calls,
             scores,
-            Some(current_score.clone()),
-            consecutive_all_negative,
+            Some(&(current_score.clone(), cumulative_snps.clone())),
+            depth + 1,
         );
 
         scores.push(HaplogroupResult {
@@ -768,11 +769,13 @@ fn calculate_haplogroup_score(
             mismatching_snps: branch_low_quality.try_into().unwrap_or(0),
             ancestral_matches: child_score.ancestral_matches.try_into().unwrap_or(0),
             no_calls: child_score.no_calls.try_into().unwrap_or(0),
-            total_snps: child_score.total_snps.try_into().unwrap_or(0),
+            total_snps: defining_snps.len() as u32,
+            cumulative_snps: child_cumulative.len() as u32,
+            depth,
         });
     }
 
-    current_score
+    (current_score, cumulative_snps)
 }
 
 fn validate_hg38_reference<R: Read>(bam: &R) -> Result<(), Box<dyn std::error::Error>> {
@@ -792,4 +795,54 @@ fn validate_hg38_reference<R: Read>(bam: &R) -> Result<(), Box<dyn std::error::E
     }
 
     Ok(())
+}
+
+#[derive(Debug)]
+struct ScoredPath {
+    results: Vec<HaplogroupResult>,
+    total_score: f64,
+}
+
+fn find_path_to_root(
+    haplogroup: &Haplogroup,
+    target_name: &str,
+    scores: &[HaplogroupResult],
+) -> Option<Vec<String>> {
+    if haplogroup.name == target_name {
+        return Some(vec![haplogroup.name.clone()]);
+    }
+
+    for child in &haplogroup.children {
+        if let Some(mut path) = find_path_to_root(child, target_name, scores) {
+            path.push(haplogroup.name.clone());
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+fn collect_scored_paths(scores: Vec<HaplogroupResult>, tree: &Haplogroup) -> Vec<HaplogroupResult> {
+    let mut ordered_results = Vec::new();
+    let mut remaining = scores;
+
+    // First, find the highest scoring result
+    remaining.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+
+    if let Some(top_result) = remaining.first() {
+        if let Some(path) = find_path_to_root(tree, &top_result.name, &remaining) {
+            // Add results in path from leaf to root
+            for name in path.iter() {
+                if let Some(pos) = remaining.iter().position(|r| r.name == *name) {
+                    ordered_results.push(remaining.remove(pos));
+                }
+            }
+        }
+    }
+
+    // Add any remaining results sorted by score
+    remaining.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    ordered_results.extend(remaining);
+
+    ordered_results
 }
