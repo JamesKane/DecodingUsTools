@@ -2,6 +2,7 @@ mod cli;
 mod commands;
 mod haplogroup;
 mod utils;
+mod vendor;
 
 use clap::Parser;
 

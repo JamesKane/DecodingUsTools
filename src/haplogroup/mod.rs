@@ -6,221 +6,58 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
-const BAM_CMATCH: u32 = 0;
-const BAM_CINS: u32 = 1;
-const BAM_CDEL: u32 = 2;
-const BAM_CREF_SKIP: u32 = 3;
-const BAM_CSOFT_CLIP: u32 = 4;
-const BAM_CEQUAL: u32 = 7;
-const BAM_CDIFF: u32 = 8;
-
 #[derive(Deserialize, Debug)]
 pub struct Variant {
-    variant: String,
+    pub variant: String,
     #[serde(rename = "position", default)]
-    pos: u32,
+    pub pos: u32,
     #[serde(default)]
-    ancestral: String,
+    pub ancestral: String,
     #[serde(default)]
-    derived: String,
+    pub derived: String,
     #[serde(default)]
-    region: String,
+    pub region: String,
     #[serde(rename = "snpId", default)]
-    snp_id: u32,
-}
-
-#[derive(Deserialize, Debug)]
-struct RawVariant {
-    #[serde(default)]
-    variant: Option<String>,
-    #[serde(alias = "pos")]
-    position: Option<i32>,
-    #[serde(default)]
-    ancestral: Option<String>,
-    #[serde(default)]
-    derived: Option<String>,
-    #[serde(default)]
-    region: Option<String>,
-    #[serde(rename = "snpId", default)]
-    snp_id: Option<u32>,
-}
-
-// Deal with incoherent variants in FTDNA's tree
-impl TryFrom<RawVariant> for Variant {
-    type Error = &'static str;
-
-    fn try_from(raw: RawVariant) -> Result<Self, Self::Error> {
-        Ok(Variant {
-            variant: raw.variant.ok_or("missing variant")?,
-            pos: raw.position.ok_or("missing position")?.unsigned_abs(),
-            ancestral: raw.ancestral.ok_or("missing ancestral")?,
-            derived: raw.derived.ok_or("missing derived")?,
-            region: raw.region.unwrap_or_default(),
-            snp_id: raw.snp_id.unwrap_or_default(),
-        })
-    }
-}
-
-impl Variant {
-    fn to_snp(&self, tree_type: TreeType) -> Option<Snp> {
-        // Only convert variants that have all required fields
-        if self.variant.is_empty() || self.ancestral.is_empty() || self.derived.is_empty() {
-            return None;
-        }
-
-        Some(Snp {
-            position: self.pos,
-            ancestral: self.ancestral.clone(),
-            derived: self.derived.clone(),
-            chromosome: match tree_type {
-                TreeType::YDNA => "chrY".to_string(),
-                TreeType::MTDNA => "chrM".to_string(),
-            },
-            build: match tree_type {
-                TreeType::YDNA => "hg38".to_string(),
-                TreeType::MTDNA => "rCRS".to_string(),
-            },
-        })
-    }
+    pub snp_id: u32,
 }
 
 #[derive(Deserialize, Debug)]
 pub struct HaplogroupNode {
-    #[serde(rename = "haplogroupId")]
-    haplogroup_id: u32,
-    #[serde(rename = "parentId", default)]
-    parent_id: u32,
-    name: String,
-    #[serde(rename = "isRoot")]
-    is_root: bool,
-    root: String,
-    #[serde(rename = "kitsCount")]
-    kits_count: u32,
-    #[serde(rename = "subBranches")]
-    sub_branches: u32,
-    #[serde(rename = "bigYCount")]
-    big_y_count: u32,
-    #[serde(default)]
-    variants: Vec<Variant>,
-    #[serde(default)]
-    children: Vec<u32>,
+    pub haplogroup_id: u32,
+    pub parent_id: u32,
+    pub name: String,
+    pub is_root: bool,
+    pub root: String,
+    pub kits_count: u32,
+    pub sub_branches: u32,
+    pub big_y_count: u32,
+    pub variants: Vec<Variant>,
+    pub children: Vec<u32>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 pub struct HaplogroupTree {
     #[serde(rename = "allNodes")]
-    #[serde(deserialize_with = "deserialize_nodes")]
-    all_nodes: HashMap<String, HaplogroupNode>,
+    pub all_nodes: HashMap<String, HaplogroupNode>,
 }
 
 #[derive(Debug)]
 pub struct Haplogroup {
-    name: String,
-    parent: Option<String>,
-    snps: Vec<Snp>,
-    children: Vec<Haplogroup>,
-}
-
-fn deserialize_nodes<'de, D>(deserializer: D) -> Result<HashMap<String, HaplogroupNode>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::de::Error;
-
-    // First deserialize into a temporary structure with RawVariants
-    #[derive(Deserialize)]
-    struct TempNode {
-        #[serde(rename = "haplogroupId")]
-        haplogroup_id: u32,
-        #[serde(rename = "parentId", default)]
-        parent_id: u32,
-        name: String,
-        #[serde(rename = "isRoot")]
-        is_root: bool,
-        root: String,
-        #[serde(rename = "kitsCount")]
-        kits_count: u32,
-        #[serde(rename = "subBranches")]
-        sub_branches: u32,
-        #[serde(rename = "bigYCount")]
-        big_y_count: u32,
-        #[serde(default)]
-        variants: Vec<RawVariant>,
-        #[serde(default)]
-        children: Vec<u32>,
-    }
-
-    let temp_map: HashMap<String, TempNode> = HashMap::deserialize(deserializer)?;
-
-    // Convert TempNode to HaplogroupNode, processing variants
-    temp_map
-        .into_iter()
-        .map(|(k, v)| {
-            let variants = v
-                .variants
-                .into_iter()
-                .filter_map(|raw| Variant::try_from(raw).ok())
-                .collect();
-
-            let node = HaplogroupNode {
-                haplogroup_id: v.haplogroup_id,
-                parent_id: v.parent_id,
-                name: v.name,
-                is_root: v.is_root,
-                root: v.root,
-                kits_count: v.kits_count,
-                sub_branches: v.sub_branches,
-                big_y_count: v.big_y_count,
-                variants,
-                children: v.children,
-            };
-            Ok((k, node))
-        })
-        .collect()
-}
-
-impl HaplogroupTree {
-    fn build_tree(&self, node_id: u32, tree_type: TreeType) -> Option<Haplogroup> {
-        let node = self.all_nodes.get(&node_id.to_string())?;
-
-        let parent = if node.parent_id != 0 {
-            self.all_nodes
-                .get(&node.parent_id.to_string())
-                .map(|p| p.name.clone())
-        } else {
-            None
-        };
-
-        let snps = node
-            .variants
-            .iter()
-            .filter_map(|v| v.to_snp(tree_type))
-            .collect();
-
-        let children = node
-            .children
-            .iter()
-            .filter_map(|&child_id| self.build_tree(child_id, tree_type))
-            .collect();
-
-        Some(Haplogroup {
-            name: node.name.clone(),
-            parent,
-            snps,
-            children,
-        })
-    }
+    pub(crate) name: String,
+    pub(crate) parent: Option<String>,
+    pub(crate) snps: Vec<Snp>,
+    pub(crate) children: Vec<Haplogroup>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct Snp {
-    position: u32,
-    ancestral: String,
-    derived: String,
+    pub(crate) position: u32,
+    pub(crate) ancestral: String,
+    pub(crate) derived: String,
     #[serde(skip)]
-    chromosome: String,
+    pub(crate) chromosome: String,
     #[serde(skip)]
-    build: String,
+    pub(crate) build: String,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
@@ -285,9 +122,9 @@ pub fn analyze_haplogroup(
 
     // Get tree from cache
     let tree_cache = TreeCache::new(tree_type)?;
-    let tree_json: HaplogroupTree = tree_cache.get_tree()?;
+    let tree = tree_cache.get_tree()?;
 
-    let root_count = tree_json
+    let root_count = tree
         .all_nodes
         .values()
         .filter(|node| node.parent_id == 0)
@@ -296,21 +133,20 @@ pub fn analyze_haplogroup(
         return Err("Multiple root nodes found in tree".into());
     }
 
-    // Find the root node (usually has parent_id = 0)
-    let root_node = tree_json
+    let root_node = tree
         .all_nodes
         .values()
         .find(|node| node.parent_id == 0)
         .ok_or("No root node found")?;
 
-    // Build the tree structure starting from root
-    let tree = tree_json
-        .build_tree(root_node.haplogroup_id, tree_type)
+    let haplogroup_tree = tree_cache
+        .provider
+        .build_tree(&tree, root_node.haplogroup_id, tree_type)
         .ok_or("Failed to build tree")?;
 
     // Create map of positions to check
     let mut positions: HashMap<u32, Vec<(&str, &Snp)>> = HashMap::new();
-    collect_snps(&tree, &mut positions);
+    collect_snps(&haplogroup_tree, &mut positions);
 
     // Determine which chromosome we need to process
     let need_y = positions
@@ -383,9 +219,9 @@ pub fn analyze_haplogroup(
 
     // Score haplogroups
     let mut scores = Vec::new();
-    calculate_haplogroup_score(&tree, &snp_calls, &mut scores, None, 0);
+    calculate_haplogroup_score(&haplogroup_tree, &snp_calls, &mut scores, None, 0);
 
-    let ordered_scores = collect_scored_paths(scores, &tree);
+    let ordered_scores = collect_scored_paths(scores, &haplogroup_tree);
 
     // Use ordered_scores for writing the report
     let mut writer = BufWriter::new(File::create(output_file)?);
