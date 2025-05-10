@@ -1,6 +1,7 @@
 mod scoring;
 pub(crate) mod types;
 mod validation;
+mod tree;
 
 use crate::haplogroup::types::{Haplogroup, HaplogroupResult, Snp};
 use crate::utils::cache::{TreeCache, TreeType};
@@ -60,7 +61,7 @@ pub fn analyze_haplogroup(
 
     // Create map of positions to check
     let mut positions: HashMap<u32, Vec<(&str, &Snp)>> = HashMap::new();
-    collect_snps(&haplogroup_tree, &mut positions);
+    tree::collect_snps(&haplogroup_tree, &mut positions);
 
     // Determine which chromosome we need to process
     let need_y = positions
@@ -212,7 +213,7 @@ fn process_region<R: Read>(
                         read_pos += len;
                     }
                     'D' | 'N' => {
-                        ref_pos += op.len() as u32;
+                        ref_pos += op.len();
                     }
                     'I' | 'S' => {
                         read_pos += op.len() as usize;
@@ -243,43 +244,6 @@ fn process_region<R: Read>(
     }
 
     Ok(())
-}
-
-fn collect_snps<'a>(
-    haplogroup: &'a Haplogroup,
-    positions: &mut HashMap<u32, Vec<(&'a str, &'a Snp)>>,
-) {
-    for snp in &haplogroup.snps {
-        if validation::is_valid_snp(snp) {
-            positions
-                .entry(snp.position)
-                .or_default()
-                .push((&haplogroup.name, snp));
-        }
-    }
-
-    for child in &haplogroup.children {
-        collect_snps(child, positions);
-    }
-}
-
-fn find_path_to_root(
-    haplogroup: &Haplogroup,
-    target_name: &str,
-    scores: &[HaplogroupResult],
-) -> Option<Vec<String>> {
-    if haplogroup.name == target_name {
-        return Some(vec![haplogroup.name.clone()]);
-    }
-
-    for child in &haplogroup.children {
-        if let Some(mut path) = find_path_to_root(child, target_name, scores) {
-            path.push(haplogroup.name.clone());
-            return Some(path);
-        }
-    }
-
-    None
 }
 
 fn collect_scored_paths(scores: Vec<HaplogroupResult>, tree: &Haplogroup) -> Vec<HaplogroupResult> {
@@ -323,7 +287,7 @@ fn collect_scored_paths(scores: Vec<HaplogroupResult>, tree: &Haplogroup) -> Vec
 
     // Take the top result and ensure its ancestral path is included first
     if let Some(top_result) = remaining.first().cloned() {
-        if let Some(path) = find_path_to_root(tree, &top_result.name, &remaining) {
+        if let Some(path) = tree::find_path_to_root(tree, &top_result.name, &remaining) {
             // Remove all path elements from remaining
             for name in &path {
                 if let Some(pos) = remaining.iter().position(|r| &r.name == name) {
