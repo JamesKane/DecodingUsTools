@@ -4,7 +4,7 @@ mod validation;
 mod tree;
 
 use crate::haplogroup::types::{Haplogroup, HaplogroupResult, Snp};
-use crate::utils::cache::{TreeCache, TreeType};
+use crate::utils::cache::TreeType;
 use indicatif::{ProgressBar, ProgressStyle};
 use rust_htslib::{bam::IndexedReader, bam::Read};
 use std::collections::HashMap;
@@ -35,29 +35,7 @@ pub fn analyze_haplogroup(
     let mut bam = IndexedReader::from_path(&bam_file)?;
     validation::validate_hg38_reference(&bam)?;
 
-    // Get tree from cache
-    let tree_cache = TreeCache::new(tree_type)?;
-    let tree = tree_cache.get_tree()?;
-
-    let root_count = tree
-        .all_nodes
-        .values()
-        .filter(|node| node.parent_id == 0)
-        .count();
-    if root_count > 1 {
-        return Err("Multiple root nodes found in tree".into());
-    }
-
-    let root_node = tree
-        .all_nodes
-        .values()
-        .find(|node| node.parent_id == 0)
-        .ok_or("No root node found")?;
-
-    let haplogroup_tree = tree_cache
-        .provider
-        .build_tree(&tree, root_node.haplogroup_id, tree_type)
-        .ok_or("Failed to build tree")?;
+    let haplogroup_tree = tree::load_tree(tree_type)?;
 
     // Create map of positions to check
     let mut positions: HashMap<u32, Vec<(&str, &Snp)>> = HashMap::new();

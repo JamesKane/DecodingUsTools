@@ -1,6 +1,34 @@
-use std::collections::HashMap;
 use crate::haplogroup::types::{Haplogroup, HaplogroupResult, Snp};
 use crate::haplogroup::validation;
+use crate::utils::cache::{TreeCache, TreeType};
+use std::collections::HashMap;
+
+pub(crate) fn load_tree(tree_type: TreeType) -> Result<Haplogroup, Box<dyn std::error::Error>> {
+    // Get tree from cache
+    let tree_cache = TreeCache::new(tree_type)?;
+    let tree = tree_cache.get_tree()?;
+
+    let root_count = tree
+        .all_nodes
+        .values()
+        .filter(|node| node.parent_id == 0)
+        .count();
+    if root_count > 1 {
+        return Err("Multiple root nodes found in tree".into());
+    }
+
+    let root_node = tree
+        .all_nodes
+        .values()
+        .find(|node| node.parent_id == 0)
+        .ok_or("No root node found")?;
+
+    let haplogroup_tree = tree_cache
+        .provider
+        .build_tree(&tree, root_node.haplogroup_id, tree_type)
+        .ok_or("Failed to build tree")?;
+    Ok(haplogroup_tree)
+}
 
 pub(crate) fn collect_snps<'a>(
     haplogroup: &'a Haplogroup,
