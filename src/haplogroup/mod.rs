@@ -1,92 +1,14 @@
+mod scoring;
+pub(crate) mod types;
+mod validation;
+
+use crate::haplogroup::types::{Haplogroup, HaplogroupResult, Snp};
 use crate::utils::cache::{TreeCache, TreeType};
 use indicatif::{ProgressBar, ProgressStyle};
 use rust_htslib::{bam::IndexedReader, bam::Read};
-use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
-
-#[derive(Deserialize, Debug)]
-pub struct Variant {
-    pub variant: String,
-    #[serde(rename = "position", default)]
-    pub pos: u32,
-    #[serde(default)]
-    pub ancestral: String,
-    #[serde(default)]
-    pub derived: String,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct HaplogroupNode {
-    pub haplogroup_id: u32,
-    pub parent_id: u32,
-    pub name: String,
-    pub is_root: bool,
-    pub variants: Vec<Variant>,
-    pub children: Vec<u32>,
-}
-
-#[derive(Deserialize)]
-pub struct HaplogroupTree {
-    #[serde(rename = "allNodes")]
-    pub all_nodes: HashMap<String, HaplogroupNode>,
-}
-
-#[derive(Debug)]
-pub struct Haplogroup {
-    pub(crate) name: String,
-    pub(crate) parent: Option<String>,
-    pub(crate) snps: Vec<Snp>,
-    pub(crate) children: Vec<Haplogroup>,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-pub struct Snp {
-    pub(crate) position: u32,
-    pub(crate) ancestral: String,
-    pub(crate) derived: String,
-    #[serde(skip)]
-    pub(crate) chromosome: String,
-    #[serde(skip)]
-    pub(crate) build: String,
-}
-
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
-struct HaplogroupScore {
-    matches: usize,
-    ancestral_matches: usize,
-    no_calls: usize,
-    total_snps: usize,
-    score: f64,
-    depth: usize, // Added depth field
-}
-
-impl Default for HaplogroupScore {
-    fn default() -> Self {
-        Self {
-            matches: 0,
-            ancestral_matches: 0,
-            no_calls: 0,
-            total_snps: 0,
-            score: 0.0,
-            depth: 0,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct HaplogroupResult {
-    name: String,
-    score: f64,
-    matching_snps: u32,
-    mismatching_snps: u32,
-    ancestral_matches: u32,
-    no_calls: u32,
-    total_snps: u32,
-    cumulative_snps: u32, // Total unique SNPs from root to this branch
-    depth: u32,
-}
 
 pub fn analyze_haplogroup(
     bam_file: String,
@@ -110,7 +32,7 @@ pub fn analyze_haplogroup(
 
     // Use IndexedReader instead of Reader
     let mut bam = IndexedReader::from_path(&bam_file)?;
-    validate_hg38_reference(&bam)?;
+    validation::validate_hg38_reference(&bam)?;
 
     // Get tree from cache
     let tree_cache = TreeCache::new(tree_type)?;
@@ -211,7 +133,7 @@ pub fn analyze_haplogroup(
 
     // Score haplogroups
     let mut scores = Vec::new();
-    calculate_haplogroup_score(&haplogroup_tree, &snp_calls, &mut scores, None, 0);
+    scoring::calculate_haplogroup_score(&haplogroup_tree, &snp_calls, &mut scores, None, 0);
 
     let ordered_scores = collect_scored_paths(scores, &haplogroup_tree);
 
@@ -328,7 +250,7 @@ fn collect_snps<'a>(
     positions: &mut HashMap<u32, Vec<(&'a str, &'a Snp)>>,
 ) {
     for snp in &haplogroup.snps {
-        if is_valid_snp(snp) {
+        if validation::is_valid_snp(snp) {
             positions
                 .entry(snp.position)
                 .or_default()
@@ -339,166 +261,6 @@ fn collect_snps<'a>(
     for child in &haplogroup.children {
         collect_snps(child, positions);
     }
-}
-
-fn is_valid_snp(snp: &Snp) -> bool {
-    match snp.chromosome.as_str() {
-        "chrM" => true,
-        "chrY" => snp.build == "hg38",
-        _ => false,
-    }
-}
-
-fn calculate_haplogroup_score(
-    haplogroup: &Haplogroup,
-    snp_calls: &HashMap<u32, (char, u32, f64)>,
-    scores: &mut Vec<HaplogroupResult>,
-    parent_info: Option<&(HaplogroupScore, HashSet<u32>)>,
-    depth: u32,
-) -> (HaplogroupScore, HashSet<u32>) {
-    let mut current_score = HaplogroupScore::default();
-    let mut cumulative_snps = parent_info
-        .map(|(_, snps)| snps.clone())
-        .unwrap_or_default();
-
-    for snp in &haplogroup.snps {
-        if is_valid_snp(snp) {
-            cumulative_snps.insert(snp.position);
-        }
-    }
-
-    let defining_snps: Vec<_> = haplogroup
-        .snps
-        .iter()
-        .filter(|snp| is_valid_snp(snp))
-        .collect();
-
-    let mut branch_derived = 0;
-    let mut branch_ancestral = 0;
-    let mut branch_no_calls = 0;
-    let mut branch_low_quality = 0;
-
-    // Process defining SNPs
-    for snp in &defining_snps {
-        if let Some((called_base, depth, freq)) = snp_calls.get(&snp.position) {
-            if *depth >= 4 {
-                let derived_base = snp.derived.chars().next().unwrap();
-                let ancestral_base = snp.ancestral.chars().next().unwrap();
-
-                if *called_base == derived_base {
-                    if *freq >= 0.7 {
-                        branch_derived += 1;
-                    } else if *freq >= 0.5 {
-                        branch_derived += 1;
-                    } else {
-                        branch_low_quality += 1;
-                    }
-                } else if *called_base == ancestral_base {
-                    if *freq >= 0.7 {
-                        branch_ancestral += 1;
-                    } else {
-                        branch_low_quality += 1;
-                    }
-                } else if *freq >= 0.7 {
-                    branch_derived += 1;
-                } else {
-                    branch_low_quality += 1;
-                }
-            } else {
-                branch_no_calls += 1;
-            }
-        } else {
-            branch_no_calls += 1;
-        }
-    }
-
-    // Calculate score with improved logic
-    let total_calls = branch_derived + branch_ancestral + branch_low_quality;
-    if total_calls > 0 {
-        // Revised scoring logic
-        let branch_score = if branch_ancestral == 0 {
-            // No contradicting evidence
-            match branch_derived {
-                d if d >= 1 => 3.08, // Any clean derived matches with no ancestral contradictions
-                _ => 1.0,
-            }
-        } else {
-            match (branch_derived, branch_ancestral) {
-                (d, a) if d >= 3 && a <= d / 2 => 2.8,
-                (d, a) if d >= 2 && a <= d => 2.5,
-                (d, _) if d >= 2 => 2.0,
-                (1, a) if a <= 2 => 1.5,
-                (d, a) if a > d * 3 => 0.0,
-                _ => 1.0,
-            }
-        };
-
-        let quality_factor = if branch_low_quality == 0 { 1.1 } else { 0.9 };
-        current_score.score = branch_score * quality_factor;
-    }
-
-    current_score.matches += branch_derived;
-    current_score.ancestral_matches += branch_ancestral;
-    current_score.no_calls += branch_no_calls;
-    current_score.total_snps += defining_snps.len();
-
-    if branch_ancestral > branch_derived * 10 {
-        scores.push(HaplogroupResult {
-            name: haplogroup.name.clone(),
-            score: 0.0,
-            matching_snps: branch_derived.try_into().unwrap_or(0),
-            mismatching_snps: branch_low_quality.try_into().unwrap_or(0),
-            ancestral_matches: branch_ancestral.try_into().unwrap_or(0),
-            no_calls: branch_no_calls.try_into().unwrap_or(0),
-            total_snps: defining_snps.len() as u32,
-            cumulative_snps: cumulative_snps.len() as u32,
-            depth,
-        });
-        return (current_score, cumulative_snps);
-    }
-
-    for child in &haplogroup.children {
-        let (child_score, child_cumulative) = calculate_haplogroup_score(
-            child,
-            snp_calls,
-            scores,
-            Some(&(current_score.clone(), cumulative_snps.clone())),
-            depth + 1,
-        );
-
-        scores.push(HaplogroupResult {
-            name: child.name.clone(),
-            score: child_score.score,
-            matching_snps: child_score.matches.try_into().unwrap_or(0),
-            mismatching_snps: branch_low_quality.try_into().unwrap_or(0),
-            ancestral_matches: child_score.ancestral_matches.try_into().unwrap_or(0),
-            no_calls: child_score.no_calls.try_into().unwrap_or(0),
-            total_snps: defining_snps.len() as u32,
-            cumulative_snps: child_cumulative.len() as u32,
-            depth,
-        });
-    }
-
-    (current_score, cumulative_snps)
-}
-
-fn validate_hg38_reference<R: Read>(bam: &R) -> Result<(), Box<dyn std::error::Error>> {
-    let header = bam.header();
-    let sq_count = header.target_count();
-
-    if sq_count == 0 {
-        return Err("BAM file has no reference sequences".into());
-    }
-
-    // Check if chrY or chrM exists based on need
-    let has_chry = header.tid(b"chrY").is_some();
-    let has_chrm = header.tid(b"chrM").is_some();
-
-    if !has_chry && !has_chrm {
-        return Err("BAM file missing required chromosome (chrY or chrM)".into());
-    }
-
-    Ok(())
 }
 
 fn find_path_to_root(
@@ -552,13 +314,11 @@ fn collect_scored_paths(scores: Vec<HaplogroupResult>, tree: &Haplogroup) -> Vec
 
     // Sort by cumulative SNPs descending, then by score descending for ties
     remaining.sort_by(|a, b| {
-        b.cumulative_snps
-            .cmp(&a.cumulative_snps)
-            .then_with(|| {
-                b.score
-                    .partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+        b.cumulative_snps.cmp(&a.cumulative_snps).then_with(|| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     });
 
     // Take the top result and ensure its ancestral path is included first
@@ -575,13 +335,11 @@ fn collect_scored_paths(scores: Vec<HaplogroupResult>, tree: &Haplogroup) -> Vec
 
     // Sort remaining results by cumulative SNPs descending, score as tiebreaker
     remaining.sort_by(|a, b| {
-        b.cumulative_snps
-            .cmp(&a.cumulative_snps)
-            .then_with(|| {
-                b.score
-                    .partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+        b.cumulative_snps.cmp(&a.cumulative_snps).then_with(|| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     });
 
     // Add remaining results

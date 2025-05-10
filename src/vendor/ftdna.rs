@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::error::Error;
-use crate::haplogroup::{HaplogroupTree, HaplogroupNode, Variant, Haplogroup, Snp};
+use crate::haplogroup::types::{HaplogroupTree, HaplogroupNode, Variant, Haplogroup, Snp};
 use crate::utils::cache::TreeType;
 use super::TreeProvider;
 

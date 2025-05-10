@@ -1,4 +1,4 @@
-use crate::haplogroup::{Haplogroup, HaplogroupTree};
+use crate::haplogroup::types::{Haplogroup, HaplogroupTree};
 use crate::utils::cache::TreeType;
 use std::error::Error;
 

@@ -1,4 +1,4 @@
-use crate::haplogroup::{Haplogroup, HaplogroupTree};
+use crate::haplogroup::types::{Haplogroup, HaplogroupTree};
 pub(crate) use crate::vendor::TreeProvider;
 use chrono::{Datelike, Local};
 use directories::ProjectDirs;
