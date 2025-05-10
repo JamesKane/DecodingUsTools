@@ -75,7 +75,7 @@ impl Default for HaplogroupScore {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct HaplogroupResult {
     name: String,
     score: f64,
@@ -415,13 +415,22 @@ fn calculate_haplogroup_score(
     // Calculate score with improved logic
     let total_calls = branch_derived + branch_ancestral + branch_low_quality;
     if total_calls > 0 {
-        let branch_score = match (branch_derived, branch_ancestral) {
-            (d, a) if d >= 3 && a <= d / 2 => 2.8,
-            (d, a) if d >= 2 && a <= d => 2.5,
-            (d, _) if d >= 2 => 2.0,
-            (1, a) if a <= 2 => 1.5,
-            (d, a) if a > d * 3 => 0.0,
-            _ => 1.0,
+        // Revised scoring logic
+        let branch_score = if branch_ancestral == 0 {
+            // No contradicting evidence
+            match branch_derived {
+                d if d >= 1 => 3.08, // Any clean derived matches with no ancestral contradictions
+                _ => 1.0,
+            }
+        } else {
+            match (branch_derived, branch_ancestral) {
+                (d, a) if d >= 3 && a <= d / 2 => 2.8,
+                (d, a) if d >= 2 && a <= d => 2.5,
+                (d, _) if d >= 2 => 2.0,
+                (1, a) if a <= 2 => 1.5,
+                (d, a) if a > d * 3 => 0.0,
+                _ => 1.0,
+            }
         };
 
         let quality_factor = if branch_low_quality == 0 { 1.1 } else { 0.9 };
@@ -514,37 +523,69 @@ fn find_path_to_root(
 fn collect_scored_paths(scores: Vec<HaplogroupResult>, tree: &Haplogroup) -> Vec<HaplogroupResult> {
     let mut ordered_results = Vec::new();
 
-    // Filter out results with overwhelming ancestral evidence
-    let mut remaining: Vec<HaplogroupResult> = scores
-        .into_iter()
+    // First, deduplicate the results by keeping only the entry with the highest score for each haplogroup
+    let mut unique_results: HashMap<String, HaplogroupResult> = HashMap::new();
+    for result in scores {
+        unique_results
+            .entry(result.name.clone())
+            .and_modify(|existing| {
+                if result.score > existing.score {
+                    *existing = result.clone();
+                }
+            })
+            .or_insert(result);
+    }
+
+    // Convert to vec and filter with stricter criteria
+    let mut remaining: Vec<HaplogroupResult> = unique_results
+        .into_values()
         .filter(|result| {
-            // Remove if:
-            // 1. Has overwhelming ancestral evidence (>100x derived)
-            // 2. OR has zero derived matches and significant ancestral matches (>10)
-            // 3. OR has zero derived and zero ancestral matches
-            !(result.ancestral_matches > result.matching_snps * 100
-                || (result.matching_snps == 0 && result.ancestral_matches > 10)
-                || (result.score == 0.0 && result.matching_snps == 0))
+            // Keep only results that:
+            // 1. Have a non-zero score
+            // 2. Don't have overwhelmingly more ancestral than derived matches
+            // 3. Have at least some derived matches
+            result.score > 0.0
+                && result.ancestral_matches <= result.matching_snps * 3
+                && result.matching_snps > 0
         })
         .collect();
 
-    // Rest of the function remains the same...
+    // Sort by cumulative SNPs descending, then by score descending for ties
     remaining.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        b.cumulative_snps
+            .cmp(&a.cumulative_snps)
+            .then_with(|| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
     });
 
-    if let Some(top_result) = remaining.first() {
+    // Take the top result and ensure its ancestral path is included first
+    if let Some(top_result) = remaining.first().cloned() {
         if let Some(path) = find_path_to_root(tree, &top_result.name, &remaining) {
-            for name in path.iter() {
-                if let Some(pos) = remaining.iter().position(|r| r.name == *name) {
+            // Remove all path elements from remaining
+            for name in &path {
+                if let Some(pos) = remaining.iter().position(|r| &r.name == name) {
                     ordered_results.push(remaining.remove(pos));
                 }
             }
         }
     }
 
+    // Sort remaining results by cumulative SNPs descending, score as tiebreaker
+    remaining.sort_by(|a, b| {
+        b.cumulative_snps
+            .cmp(&a.cumulative_snps)
+            .then_with(|| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+
+    // Add remaining results
     ordered_results.extend(remaining);
+
     ordered_results
 }
