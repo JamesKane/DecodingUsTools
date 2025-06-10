@@ -19,7 +19,10 @@ copy the binary to a location already in your PATH.
 ### Coverage Analysis
 
 ```shell
-decodingus-tools coverage --reference <REFERENCE_FILE> <BAM_FILE> -o <cov_report.txt>
+decodingus-tools coverage \
+  --reference <REFERENCE_FILE> \
+  -o <cov_report.txt> \
+  <BAM_FILE> 
 ```
 
 Results in a coverage report for each contig in the BAM. Requires the original reference.
@@ -28,10 +31,12 @@ Intended to replace `samtools coverage` and `gatk CallableLoci` with a single to
 ### Y-DNA Branch Finding
 
 ```shell
-decodingus-tools find-y-branch --reference <REFERENCE_FILE> <BAM_FILE> <OUTPUT_FILE>
+decodingus-tools find-y-branch \
+  --reference <REFERENCE_FILE> \
+  <BAM_FILE> <OUTPUT_FILE>
 ```
 
-Find the closest YDNA branch
+Find the closest YDNA branch.  Example output:
 
 |Haplogroup|Score|Matching_SNPs|Mismatching_SNPs|Ancestral_Matches|No_Calls|Total_SNPs|Cumulative_SNPs|Depth|
 |----------|------|-------------|----------------|-----------------|--------|----------|---------------|-----|
@@ -41,10 +46,12 @@ Find the closest YDNA branch
 ### mtDNA Branch Finding
 
 ```shell
-decodingus-tools find-mt-branch --reference <REFERENCE_FILE> <BAM_FILE> <OUTPUT_FILE>
+decodingus-tools find-mt-branch \
+--reference <REFERENCE_FILE> \
+ <BAM_FILE> <OUTPUT_FILE>
 ```
 
-Find the closest mtDNA branch
+Find the closest mtDNA branch. Example output:
 
 |Haplogroup| Score |Matching_SNPs|Mismatching_SNPs|Ancestral_Matches|No_Calls|Total_SNPs|Cumulative_SNPs|Depth|
 |----------|-------|-------------|----------------|-----------------|--------|----------|---------------|-----|
@@ -53,7 +60,10 @@ Find the closest mtDNA branch
 ### Fix Surjected BAM
 
 ```shell
-decodingus-tools fix-surjected-bam --reference <REFERNECE_FILE> -o <OUTPUT_BAM> <SURJECTED_BAM>
+decodingus-tools fix-surjected-bam \
+  --reference <REFERNECE_FILE> \ 
+  -o <OUTPUT_BAM> \ 
+  <SURJECTED_BAM>
 ```
 
 When a GAM file is surjected back via `vg surject` to a linear BAM, the results are mixed up compared to a traditional linear reference. This automates:
