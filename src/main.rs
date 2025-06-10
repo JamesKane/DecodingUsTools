@@ -9,6 +9,7 @@ use clap::Parser;
 
 use crate::bam_fixer::BamFixer;
 use std::error::Error;
+use anyhow::Context;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = cli::Args::parse();
@@ -73,7 +74,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             output_bam,
             keep_temp,
         } => {
-            let fixer = BamFixer::new(reference_file, input_bam, output_bam, keep_temp)?;
+            let fixer = BamFixer::new(reference_file, input_bam, output_bam, keep_temp)
+                .context("Failed to initialize BAM fixer")?;
             fixer.run()?;
         }
     }
