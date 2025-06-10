@@ -7,7 +7,7 @@ mod validation;
 use crate::haplogroup::types::{Haplogroup, HaplogroupResult, Snp};
 use crate::utils::cache::TreeType;
 use indicatif::{ProgressBar, ProgressStyle};
-use rust_htslib::{bam::IndexedReader, bam::Read};
+use rust_htslib::bam::IndexedReader;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;

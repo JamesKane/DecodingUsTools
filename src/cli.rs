@@ -85,4 +85,22 @@ pub enum Commands {
         min_quality: u8,
     },
 
+    /// Fix a BAM file that was surjected from vg surject
+    FixSurjectedBam {
+        /// Input BAM file from vg surject
+        #[arg(help = "Input BAM file from vg surject")]
+        input_bam: String,
+
+        /// Target FASTA file (example: GCA_000001405.15_GRCh38_no_alt_analysis_set.fna)
+        #[arg(short = 'r', long = "reference")]
+        reference_file: String,
+
+        /// Output BAM file
+        #[arg(short = 'o', long = "output", default_value = "surjected_final.bam")]
+        output_bam: String,
+
+        /// Keep temporary files
+        #[arg(long)]
+        keep_temp: bool,
+    },
 }

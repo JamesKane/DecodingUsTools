@@ -1,3 +1,4 @@
+mod bam_fixer;
 mod cli;
 mod commands;
 mod haplogroup;
@@ -6,6 +7,7 @@ mod vendor;
 
 use clap::Parser;
 
+use crate::bam_fixer::BamFixer;
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -42,7 +44,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             min_depth,
             min_quality,
         } => {
-            commands::find_y_branch::run(bam_file, reference_file, output_file, min_depth, min_quality)?;
+            commands::find_y_branch::run(
+                bam_file,
+                reference_file,
+                output_file,
+                min_depth,
+                min_quality,
+            )?;
         }
         cli::Commands::FindMtBranch {
             bam_file,
@@ -51,9 +59,23 @@ fn main() -> Result<(), Box<dyn Error>> {
             min_depth,
             min_quality,
         } => {
-            commands::find_mt_branch::run(bam_file, reference_file, output_file, min_depth, min_quality)?;
+            commands::find_mt_branch::run(
+                bam_file,
+                reference_file,
+                output_file,
+                min_depth,
+                min_quality,
+            )?;
         }
-
+        cli::Commands::FixSurjectedBam {
+            input_bam,
+            reference_file,
+            output_bam,
+            keep_temp,
+        } => {
+            let fixer = BamFixer::new(reference_file, input_bam, output_bam, keep_temp);
+            fixer.run()?;
+        }
     }
 
     Ok(())
