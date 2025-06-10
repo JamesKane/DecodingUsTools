@@ -14,13 +14,18 @@ cargo build --release
 After building, the binary will be in target/release/decodingus-tools.  Add this directory to your PATH or 
 copy the binary to a location already in your PATH.
 
-Usage: 
+## Usage
+
+### Coverage Analysis
+
 ```shell
 decodingus-tools coverage --reference <REFERENCE_FILE> <BAM_FILE> -o <cov_report.txt>
 ```
 
-Results in a coverage report for each contig in the BAM.  Requires the original reference.
-Intended to replace ```samtools coverage``` and ```gatk CallableLoci``` with a single tool.
+Results in a coverage report for each contig in the BAM. Requires the original reference.
+Intended to replace `samtools coverage` and `gatk CallableLoci` with a single tool.
+
+### Y-DNA Branch Finding
 
 ```shell
 decodingus-tools find-y-branch --reference <REFERENCE_FILE> <BAM_FILE> <OUTPUT_FILE>
@@ -33,6 +38,8 @@ Find the closest YDNA branch
 |R-FGC29071|2.75|3|0|2|1|9|1917|53|
 |R-FGC29067|3.08|7|0|0|2|4|1911|52|
 
+### mtDNA Branch Finding
+
 ```shell
 decodingus-tools find-mt-branch --reference <REFERENCE_FILE> <BAM_FILE> <OUTPUT_FILE>
 ```
@@ -43,12 +50,17 @@ Find the closest mtDNA branch
 |----------|-------|-------------|----------------|-----------------|--------|----------|---------------|-----|
 |U5a1b1g|1.65|1|0|0|0|1|55|15|
 
+### Fix Surjected BAM
+
 ```shell
 decodingus-tools fix-surjected-bam --reference <REFERNECE_FILE> -o <OUTPUT_BAM> <SURJECTED_BAM>
 ```
 
-When a GAM file is surjected back via `vg surject' to a linear BAM the results are mixed up as compared to a traditional linear 
-reference.  This automates reheadering the @SQ details with a known reference to match the order, removes the PanSN-spec prefix from the individual reads, and invokes samtools to sort the final result.
+When a GAM file is surjected back via `vg surject` to a linear BAM, the results are mixed up compared to a traditional linear reference. This automates:
+- Reheadering the @SQ details with a known reference to match the order
+- Removing the PanSN-spec prefix from the individual reads
+- Invoking samtools to sort the final result
+
 
 ### Caching
 The branch finding algorithms store files in these locations:
