@@ -47,9 +47,8 @@ Find the closest mtDNA branch
 decodingus-tools fix-surjected-bam --reference <REFERNECE_FILE> -o <OUTPUT_BAM> <SURJECTED_BAM>
 ```
 
-When a GAM file is surjected back to a BAM the results are mixed up as compared to a traditional linear 
-reference.  This automates reheadering the @SQ details with a known reference matching order and names,
-removes the PanSN-spec names from the individual reads, and invokes samtools to sort the final result.
+When a GAM file is surjected back via `vg surject' to a linear BAM the results are mixed up as compared to a traditional linear 
+reference.  This automates reheadering the @SQ details with a known reference to match the order, removes the PanSN-spec prefix from the individual reads, and invokes samtools to sort the final result.
 
 ### Caching
 The branch finding algorithms store files in these locations:
