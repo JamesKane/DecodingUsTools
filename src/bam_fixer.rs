@@ -1,12 +1,15 @@
 use anyhow::{anyhow, Context, Result};
+use crossbeam_channel::{bounded, unbounded};
 use indicatif::{ProgressBar, ProgressStyle};
 use rust_htslib::bam::{self, Header, Read, Reader, Writer};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::process::Command;
+use std::thread;
 use std::time::Duration;
+
 
 #[derive(Debug, Clone, Copy)]
 pub enum ReferenceGenome {
@@ -222,19 +225,7 @@ impl BamFixer {
         let header = Header::from_template(header_reader.header());
         let header_view = header_reader.header();
 
-        // Create valid reference name set
-        let valid_refs: HashSet<_> = (0..header_view.target_names().len())
-            .filter_map(|tid| {
-                let name = header_view.tid2name(tid as u32);
-                if name.is_empty() {
-                    None
-                } else {
-                    Some(String::from_utf8_lossy(name).to_string())
-                }
-            })
-            .collect();
-
-        // Create mapping of reference names to their new TIDs
+        // Create valid reference name mappings
         let ref_name_to_tid: HashMap<String, i32> = (0..header_view.target_names().len())
             .filter_map(|tid| {
                 let name = header_view.tid2name(tid as u32);
@@ -246,61 +237,105 @@ impl BamFixer {
             })
             .collect();
 
-        // Setup BAM reader and writer
-        let mut reader = Reader::from_path(&self.input_bam)?;
-        let mut writer = Writer::from_path(&self.temp_fixed_bam, &header, bam::Format::Bam)?;
-
-        // Clone the header before starting the loop
+        // Setup BAM reader
+        let reader = Reader::from_path(&self.input_bam)?;
         let input_header = reader.header().clone();
 
+        // Setup BAM writer
+        let mut writer = Writer::from_path(
+            &self.temp_fixed_bam,
+            &header,
+            bam::Format::Bam
+        )?;
+
+        // Get reference genome prefix
+        let prefix = self.reference_genome.prefix().to_string();
+
         // Setup progress bar
-        let total_reads = reader.records().count() as u64;
-        let progress = ProgressBar::new(total_reads);
+        let progress = ProgressBar::new_spinner();
         progress.set_style(
-            ProgressStyle::default_bar()
-                .template(
-                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
-                )?
-                .progress_chars("#>-"),
+            ProgressStyle::default_spinner()
+                .template("{spinner:.green} [{elapsed_precise}] Processing BAM records...")
+                .unwrap(),
         );
 
-        // Reset reader for the main loop
-        let mut reader = Reader::from_path(&self.input_bam)?;
+        // Create channels for parallel processing
+        let (record_tx, record_rx) = bounded::<bam::Record>(10000);
+        let (stat_tx, stat_rx) = unbounded();
 
-        let mut renamed_count = 0;
-        let mut unmapped_count = 0;
+        // Clone necessary data for the reader thread
+        let input_bam = self.input_bam.clone();
 
-        for (i, record_result) in reader.records().enumerate() {
-            let mut record = record_result?;
+        // Spawn reader thread
+        let reader_thread = thread::spawn(move || {
+            let mut reader = Reader::from_path(&input_bam).unwrap();
+            for record_result in reader.records() {
+                match record_result {
+                    Ok(record) => {
+                        if record_tx.send(record).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
 
-            if !record.is_unmapped() {
-                let ref_name = input_header.tid2name(record.tid() as u32);
-                if !ref_name.is_empty() {
-                    let ref_name = String::from_utf8_lossy(ref_name).to_string();
-                    if ref_name.starts_with(self.reference_genome.prefix()) {
-                        let stripped_name = ref_name
-                            .trim_start_matches(self.reference_genome.prefix())
-                            .to_string();
+        // Extract reference names before spawning the thread
+        let ref_names: Vec<(u32, String)> = (0..input_header.target_names().len() as u32)
+            .filter_map(|tid| {
+                let name = input_header.tid2name(tid);
+                if name.is_empty() {
+                    None
+                } else {
+                    Some((tid, String::from_utf8_lossy(name).to_string()))
+                }
+            })
+            .collect();
 
-                        if valid_refs.contains(&stripped_name) {
+        // Clone necessary data for the processing thread
+        let ref_name_to_tid = ref_name_to_tid.clone();
+        let prefix = prefix.clone();
+
+        // Process records in the main thread
+        let processing_thread = thread::spawn(move || {
+            let mut renamed_count = 0;
+            let mut unmapped_count = 0;
+
+            while let Ok(mut record) = record_rx.recv() {
+                if !record.is_unmapped() {
+                    let tid = record.tid() as u32;
+                    if let Some(ref_name) = ref_names.iter()
+                        .find(|(t, _)| *t == tid)
+                        .map(|(_, name)| name.as_str()) {
+                        if ref_name.starts_with(&prefix) {
+                            let stripped_name = ref_name
+                                .trim_start_matches(&prefix)
+                                .to_string();
+
                             if let Some(&new_tid) = ref_name_to_tid.get(&stripped_name) {
                                 record.set_tid(new_tid);
                                 renamed_count += 1;
+                            } else {
+                                record.set_unmapped();
+                                unmapped_count += 1;
                             }
-                        } else {
-                            record.set_unmapped();
-                            unmapped_count += 1;
                         }
                     }
                 }
+
+                writer.write(&record).unwrap();
             }
 
-            writer.write(&record)?;
+            stat_tx.send((renamed_count, unmapped_count)).unwrap();
+        });
 
-            if i % 1000 == 0 {
-                progress.set_position(i as u64);
-            }
-        }
+        // Wait for threads to complete
+        reader_thread.join().unwrap();
+        processing_thread.join().unwrap();
+
+        // Get statistics
+        let (renamed_count, unmapped_count) = stat_rx.recv()?;
 
         progress.finish_with_message("BAM processing complete");
 
@@ -310,6 +345,7 @@ impl BamFixer {
 
         Ok(())
     }
+
 
     fn run_samtools_with_progress(&self, args: &[&str], message: String) -> Result<()> {
         let progress = ProgressBar::new_spinner();

@@ -43,6 +43,14 @@ Find the closest mtDNA branch
 |----------|-------|-------------|----------------|-----------------|--------|----------|---------------|-----|
 |U5a1b1g|1.65|1|0|0|0|1|55|15|
 
+```shell
+decodingus-tools fix-surjected-bam --reference <REFERNECE_FILE> -o <OUTPUT_BAM> <SURJECTED_BAM>
+```
+
+When a GAM file is surjected back to a BAM the results are mixed up as compared to a traditional linear 
+reference.  This automates reheadering the @SQ details with a known reference matching order and names,
+removes the PanSN-spec names from the individual reads, and invokes samtools to sort the final result.
+
 ### Caching
 The branch finding algorithms store files in these locations:
 * Linux: ~/.cache/decodingus-tools
