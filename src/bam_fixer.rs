@@ -6,6 +6,7 @@ use std::fs::{self, File};
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy)]
 pub enum ReferenceGenome {
@@ -30,6 +31,7 @@ pub struct BamFixer {
     temp_original_non_sq_header: String,
     temp_reference_sq_header: String,
     temp_combined_header: String,
+    temp_fixed_bam: String,
     reference_genome: ReferenceGenome,
 }
 
@@ -40,9 +42,11 @@ impl BamFixer {
         output_bam: String,
         keep_temp: bool,
     ) -> Result<Self> {
+        // Check for samtools availability first
         crate::utils::external_tools::check_samtools()?;
 
-        let reference_genome = Self::detect_reference_genome(&input_bam)?;
+        let reference_genome = Self::detect_reference_genome(&input_bam)
+            .context("Failed to detect reference genome type")?;
 
         let temp_dir = std::env::temp_dir();
         let base_name = Path::new(&input_bam)
@@ -68,6 +72,10 @@ impl BamFixer {
                 .join(format!("{}.combined.sam", base_name))
                 .to_string_lossy()
                 .to_string(),
+            temp_fixed_bam: temp_dir
+                .join(format!("{}.fixed.bam", base_name))
+                .to_string_lossy()
+                .to_string(),
             reference_genome,
         })
     }
@@ -91,24 +99,50 @@ impl BamFixer {
         }
     }
 
-    pub fn run(&self) -> Result<()> {
-        // Generate reference header
+    fn extract_reference_sq_headers(&self) -> Result<()> {
         self.generate_reference_header()?;
+        Ok(())
+    }
 
-        // Extract non-SQ headers from original BAM
+    pub fn run(&self) -> Result<()> {
+        let progress = ProgressBar::new_spinner();
+        progress.enable_steady_tick(Duration::from_millis(100));
+        progress.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.green} {msg}")
+                .unwrap(),
+        );
+
+        // Process headers
+        progress.set_message("Processing BAM headers...");
         self.extract_non_sq_headers()?;
-
-        // Combine headers
+        self.extract_reference_sq_headers()?;
         self.combine_headers()?;
 
-        // Process and fix the BAM file
+        // Fix BAM
+        progress.set_message("Fixing BAM file...");
         self.fix_bam()?;
 
-        // Clean up unless keep_temp is true
+        // Sort BAM
+        self.run_samtools_with_progress(
+            &["sort", "-o", &self.output_bam, &self.temp_fixed_bam],
+            "Sorting BAM file (this may take several minutes for large files)...".to_string(),
+        )?;
+
+        // Index BAM
+        self.run_samtools_with_progress(
+            &["index", &self.output_bam],
+            "Indexing BAM file...".to_string(),
+        )?;
+
+        // Cleanup
         if !self.keep_temp {
+            progress.set_message("Cleaning up temporary files...");
             self.cleanup()?;
+            progress.finish_with_message("Cleanup complete");
         }
 
+        progress.finish_with_message("BAM file processing complete!");
         Ok(())
     }
 
@@ -214,7 +248,7 @@ impl BamFixer {
 
         // Setup BAM reader and writer
         let mut reader = Reader::from_path(&self.input_bam)?;
-        let mut writer = Writer::from_path(&self.output_bam, &header, bam::Format::Bam)?;
+        let mut writer = Writer::from_path(&self.temp_fixed_bam, &header, bam::Format::Bam)?;
 
         // Clone the header before starting the loop
         let input_header = reader.header().clone();
@@ -270,21 +304,37 @@ impl BamFixer {
 
         progress.finish_with_message("BAM processing complete");
 
-        // Sort and index the output BAM
-        Command::new("samtools")
-            .args(&["sort", "-o", &self.output_bam, &self.output_bam])
-            .status()
-            .context("Failed to sort output BAM")?;
-
-        Command::new("samtools")
-            .args(&["index", &self.output_bam])
-            .status()
-            .context("Failed to index output BAM")?;
-
         println!("Processing complete:");
         println!("  - Renamed {} contigs", renamed_count);
         println!("  - Marked {} reads as unmapped", unmapped_count);
 
+        Ok(())
+    }
+
+    fn run_samtools_with_progress(&self, args: &[&str], message: String) -> Result<()> {
+        let progress = ProgressBar::new_spinner();
+        progress.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.green} {msg}")
+                .unwrap(),
+        );
+        progress.set_message(message.clone());
+
+        let output = Command::new("samtools")
+            .args(args)
+            .output()
+            .context(format!("Failed to execute samtools {}", args[0]))?;
+
+        if !output.status.success() {
+            progress.finish_with_message(format!("Error in samtools {}", args[0]));
+            return Err(anyhow!(
+                "samtools {} failed: {}",
+                args[0],
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+
+        progress.finish_with_message(format!("Completed: {}", message));
         Ok(())
     }
 
