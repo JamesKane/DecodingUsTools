@@ -73,7 +73,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             output_bam,
             keep_temp,
         } => {
-            let fixer = BamFixer::new(reference_file, input_bam, output_bam, keep_temp);
+            let fixer = BamFixer::new(reference_file, input_bam, output_bam, keep_temp)?;
             fixer.run()?;
         }
     }

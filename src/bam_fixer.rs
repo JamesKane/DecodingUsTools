@@ -39,9 +39,10 @@ impl BamFixer {
         input_bam: String,
         output_bam: String,
         keep_temp: bool,
-    ) -> Self {
-        let reference_genome = Self::detect_reference_genome(&input_bam)
-            .expect("Failed to detect reference genome type");
+    ) -> Result<Self> {
+        crate::utils::external_tools::check_samtools()?;
+
+        let reference_genome = Self::detect_reference_genome(&input_bam)?;
 
         let temp_dir = std::env::temp_dir();
         let base_name = Path::new(&input_bam)
@@ -50,7 +51,7 @@ impl BamFixer {
             .to_string_lossy()
             .to_string();
 
-        BamFixer {
+        Ok(BamFixer {
             reference_file,
             input_bam,
             output_bam,
@@ -68,7 +69,7 @@ impl BamFixer {
                 .to_string_lossy()
                 .to_string(),
             reference_genome,
-        }
+        })
     }
 
     fn detect_reference_genome(bam_path: &str) -> Result<ReferenceGenome> {
