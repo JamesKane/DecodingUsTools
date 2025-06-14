@@ -2,9 +2,9 @@ use crate::haplogroup::types::{Haplogroup, HaplogroupResult, LociType, Locus};
 use crate::utils::cache::{TreeCache, TreeType};
 use std::collections::HashMap;
 
-pub(crate) fn load_tree(tree_type: TreeType) -> Result<Haplogroup, Box<dyn std::error::Error>> {
+pub(crate) fn load_tree(tree_type: TreeType, provider: crate::cli::TreeProvider) -> Result<Haplogroup, Box<dyn std::error::Error>> {
     // Get tree from cache
-    let tree_cache = TreeCache::new(tree_type)?;
+    let tree_cache = TreeCache::new(tree_type, provider)?;
     let tree = tree_cache.get_tree()?;
 
     let root_count = tree

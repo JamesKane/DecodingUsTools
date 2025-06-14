@@ -44,6 +44,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             output_file,
             min_depth,
             min_quality,
+            provider,
         } => {
             commands::find_y_branch::run(
                 bam_file,
@@ -51,6 +52,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 output_file,
                 min_depth,
                 min_quality,
+                provider,
             )?;
         }
         cli::Commands::FindMtBranch {
@@ -59,6 +61,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             output_file,
             min_depth,
             min_quality,
+            provider,
         } => {
             commands::find_mt_branch::run(
                 bam_file,
@@ -66,6 +69,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 output_file,
                 min_depth,
                 min_quality,
+                provider,
             )?;
         }
         cli::Commands::FixSurjectedBam {

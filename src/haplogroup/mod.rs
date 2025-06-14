@@ -20,6 +20,7 @@ pub fn analyze_haplogroup(
     min_depth: u32,
     min_quality: u8,
     tree_type: TreeType,
+    provider: crate::cli::TreeProvider,
 ) -> Result<(), Box<dyn Error>> {
     // Initialize the FASTA reader
     let mut fasta_reader = bio::io::fasta::IndexedReader::from_file(&reference_file)?;
@@ -37,7 +38,7 @@ pub fn analyze_haplogroup(
     let bam = IndexedReader::from_path(&bam_file)?;
     let genome = validation::validate_reference(&bam, tree_type)?;
 
-    let haplogroup_tree = tree::load_tree(tree_type)?;
+    let haplogroup_tree = tree::load_tree(tree_type, provider)?;
 
     // Determine build ID and chromosome based on genome and tree type
     let (build_id, chromosome) = match tree_type {

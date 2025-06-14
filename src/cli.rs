@@ -7,6 +7,15 @@ pub struct Args {
     pub command: Commands,
 }
 
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum TreeProvider {
+    #[value(name = "ftdna")]
+    FTDNA,
+    #[value(name = "decodingus")]
+    DecodingUs,
+}
+
+
 #[derive(Subcommand)]
 pub enum Commands {
     /// Analyze BAM file coverage and callability
@@ -51,7 +60,7 @@ pub enum Commands {
         max_low_mapq_fraction: f64,
     },
 
-    /// Find closest Y-DNA branch for a sample (Requires hg38 aligned BAM.)
+    /// Find the closest Y-DNA branch for a sample
     FindYBranch {
         /// Input BAM file
         bam_file: String,
@@ -66,9 +75,13 @@ pub enum Commands {
         /// Minimum mapping quality (default: 20)
         #[arg(long, default_value = "20")]
         min_quality: u8,
+        /// Tree provider to use
+        #[arg(long, value_enum, default_value = "ftdna")]
+        provider: TreeProvider,
     },
 
-    /// Find closest MT-DNA branch for a sample (Requires hg38 aligned BAM.)
+
+    /// Find the closest MT-DNA branch for a sample
     FindMtBranch {
         /// Input BAM file
         bam_file: String,
@@ -83,7 +96,11 @@ pub enum Commands {
         /// Minimum mapping quality (default: 20)
         #[arg(long, default_value = "20")]
         min_quality: u8,
+        /// Tree provider to use
+        #[arg(long, value_enum, default_value = "ftdna")]
+        provider: TreeProvider,
     },
+
 
     /// Fix a BAM file that was surjected from vg surject
     FixSurjectedBam {

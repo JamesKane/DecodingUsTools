@@ -1,3 +1,4 @@
+use crate::cli;
 use crate::haplogroup;
 use crate::utils::cache::TreeType;
 
@@ -7,6 +8,7 @@ pub fn run(
     output_file: String,
     min_depth: u32,
     min_quality: u8,
+    provider: cli::TreeProvider,
 ) -> Result<(), Box<dyn std::error::Error>> {
     haplogroup::analyze_haplogroup(
         bam_file,
@@ -15,5 +17,6 @@ pub fn run(
         min_depth,
         min_quality,
         TreeType::YDNA,
+        provider,
     )
 }

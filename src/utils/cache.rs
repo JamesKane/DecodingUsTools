@@ -1,5 +1,4 @@
 use crate::haplogroup::types::HaplogroupTree;
-use crate::vendor::ftdna::FtdnaTreeProvider;
 pub(crate) use crate::vendor::TreeProvider;
 use chrono::{Datelike, Local};
 use directories::ProjectDirs;
@@ -21,12 +20,11 @@ pub struct TreeCache {
 }
 
 impl TreeCache {
-    pub fn new(tree_type: TreeType) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(tree_type: TreeType, provider: crate::cli::TreeProvider) -> Result<Self, Box<dyn std::error::Error>> {
         let proj_dirs = ProjectDirs::from("com", "decodingus", "decodingus-tools")
             .ok_or("Failed to determine project directories")?;
-
-        // Use FtdnaTreeProvider from vendor module
-        let provider = Box::new(FtdnaTreeProvider::new());
+        
+        let provider = crate::vendor::get_provider(provider);
         let cache_dir = proj_dirs.cache_dir().join(provider.cache_prefix(tree_type));
         fs::create_dir_all(&cache_dir)?;
 
