@@ -34,6 +34,7 @@ Intended to replace `samtools coverage` and `gatk CallableLoci` with a single to
 decodingus-tools find-y-branch \
   --reference <REFERENCE_FILE> \
   --provider <PROVIDER> \
+[--show-snps] \
   <BAM_FILE> <OUTPUT_FILE>
 ```
 
@@ -54,6 +55,7 @@ Example output:
 decodingus-tools find-mt-branch \
 --reference <REFERENCE_FILE> \
 --provider <PROVIDER> \
+[--show-snps] \
  <BAM_FILE> <OUTPUT_FILE>
 ```
 
