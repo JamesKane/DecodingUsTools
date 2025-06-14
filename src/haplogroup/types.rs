@@ -98,7 +98,6 @@ pub struct HaplogroupResult {
     pub(crate) depth: u32,
 }
 
-// Add conversion from ApiVariant to Locus
 impl TryFrom<ApiVariant> for Locus {
     type Error = Box<dyn std::error::Error>;
 
@@ -117,7 +116,7 @@ impl TryFrom<ApiVariant> for Locus {
                     genbank_id,
                     LociCoordinate {
                         position: coord.start,
-                        chromosome: "chrY".to_string(), // This would come from a mapping of genbank_id to chromosome
+                        chromosome: "chrY".to_string(),
                         ancestral: coord.anc,
                         derived: coord.der,
                     },

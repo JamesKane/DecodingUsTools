@@ -33,10 +33,15 @@ Intended to replace `samtools coverage` and `gatk CallableLoci` with a single to
 ```shell
 decodingus-tools find-y-branch \
   --reference <REFERENCE_FILE> \
+  --provider <PROVIDER> \
   <BAM_FILE> <OUTPUT_FILE>
 ```
 
-Find the closest YDNA branch.  Example output:
+Find the closest YDNA branch. Available providers:
+- `ftdna` (default): Uses FamilyTreeDNA's haplotree
+- `decodingus`: Uses DecodingUs project haplotree
+
+Example output:
 
 |Haplogroup|Score|Matching_SNPs|Mismatching_SNPs|Ancestral_Matches|No_Calls|Total_SNPs|Cumulative_SNPs|Depth|
 |----------|------|-------------|----------------|-----------------|--------|----------|---------------|-----|
@@ -48,10 +53,14 @@ Find the closest YDNA branch.  Example output:
 ```shell
 decodingus-tools find-mt-branch \
 --reference <REFERENCE_FILE> \
+--provider <PROVIDER> \
  <BAM_FILE> <OUTPUT_FILE>
 ```
 
-Find the closest mtDNA branch. Example output:
+Find the closest mtDNA branch. Available providers:
+- `ftdna` (default): Uses FamilyTreeDNA's haplotree
+
+Example output:
 
 |Haplogroup| Score |Matching_SNPs|Mismatching_SNPs|Ancestral_Matches|No_Calls|Total_SNPs|Cumulative_SNPs|Depth|
 |----------|-------|-------------|----------------|-----------------|--------|----------|---------------|-----|

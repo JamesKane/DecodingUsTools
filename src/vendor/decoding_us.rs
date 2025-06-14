@@ -121,7 +121,16 @@ impl TreeProvider for DecodingUsTreeProvider {
 
                     let coordinates = v.coordinates.into_iter()
                         .map(|(build, coord)| {
-                            (build, LociCoordinate {
+                            // Map accession numbers to build IDs
+                            let build_id = match build.as_str() {
+                                "CM000686.2" => "GRCh38",
+                                "NC_000024.10" => "GRCh38",
+                                "NC_060948.1" => "T2T-CHM13v2.0",
+                                "CP086569.2" => "T2T-CHM13v2.0",
+                                _ => build.as_str(),
+                            };
+
+                            (build_id.to_string(), LociCoordinate {
                                 position: coord.start,
                                 chromosome: "chrY".to_string(),
                                 ancestral: coord.anc,
