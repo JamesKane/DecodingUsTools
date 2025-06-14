@@ -76,6 +76,7 @@ impl TreeCache {
         let cache_path = self.get_cache_path();
 
         if self.is_cache_valid(&cache_path) {
+            println!("Using cached tree from {}", cache_path.display());
             let mut file = File::open(&cache_path)?;
             let mut contents = String::new();
             file.read_to_string(&mut contents)?;
@@ -83,6 +84,7 @@ impl TreeCache {
             if let Ok(tree) = self.provider.parse_tree(&contents) {
                 return Ok(tree);
             }
+            println!("Cached tree invalid or outdated");
         }
 
         let progress = ProgressBar::new_spinner();
@@ -93,11 +95,20 @@ impl TreeCache {
         );
         progress.set_message(self.provider.progress_message(self.tree_type));
 
+        println!("Downloading tree from {}", self.provider.url(self.tree_type));
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(self.config.download_timeout))
-            .build()?;
-        let tree_json = client.get(self.provider.url(self.tree_type)).send()?.text()?;
+            .build()
+            .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
 
+        let response = client.get(self.provider.url(self.tree_type))
+            .send()
+            .map_err(|e| format!("Failed to download tree: {}", e))?;
+
+        let tree_json = response.text()
+            .map_err(|e| format!("Failed to read response body: {}", e))?;
+
+        println!("Caching tree to {}", cache_path.display());
         fs::write(&cache_path, &tree_json)?;
 
         progress.finish_with_message(format!(
@@ -109,5 +120,6 @@ impl TreeCache {
         ));
 
         self.provider.parse_tree(&tree_json)
+            .map_err(|e| format!("Failed to parse tree: {}", e).into())
     }
 }

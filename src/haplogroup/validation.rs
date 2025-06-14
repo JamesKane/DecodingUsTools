@@ -5,34 +5,31 @@ use crate::utils::cache::TreeType;
 pub fn validate_reference<R: Read>(
     bam: &R,
     tree_type: TreeType,
-) -> Result<ReferenceGenome, Box<dyn std::error::Error>> {
+) -> Result<(ReferenceGenome, String), Box<dyn std::error::Error>> {
     let header = bam.header();
-
+    
     // Detect reference genome from BAM header
     let genome = ReferenceGenome::from_header(header)
         .ok_or("Could not determine reference genome from BAM header")?;
 
-    // Get required chromosome based on tree type
-    let required_chr = match tree_type {
-        TreeType::YDNA => "chrY",
-        TreeType::MTDNA => "chrM",
+    // Define possible chromosome names based on build and type
+    let possible_names = match (tree_type, genome.name()) {
+        (TreeType::YDNA, "GRCh38") => vec!["chrY", "Y", "NC_000024.10", "CM000686.2"],
+        (TreeType::YDNA, "GRCh37") => vec!["Y", "chrY"],
+        (TreeType::YDNA, "T2T-CHM13v2.0") => vec!["Y", "chrY", "CP086569.2", "NC_060948.1"],
+        (TreeType::MTDNA, _) => vec!["chrM", "MT", "M"],
+        _ => vec![]
     };
 
-    // Get accession info for the required chromosome
-    let accession = genome.get_accession(required_chr)
-        .ok_or_else(|| format!("No accession found for {} in {}", required_chr, genome.name()))?;
+    // Find the first matching sequence name
+    let sequence_name = possible_names.iter()
+        .find(|&name| header.tid(name.as_bytes()).is_some())
+        .ok_or_else(|| format!(
+            "No valid sequence found in BAM. Tried: {}",
+            possible_names.join(", ")
+        ))?;
 
-    // Check if either the common name or accession is present in the BAM header
-    let has_required_seq = header.tid(accession.common_name.as_bytes()).is_some() ||
-        header.tid(accession.accession.as_bytes()).is_some();
+    println!("Found sequence as: {}", sequence_name);
 
-    if !has_required_seq {
-        return Err(format!(
-            "BAM file missing required sequence: {} ({})",
-            accession.common_name,
-            accession.accession
-        ).into());
-    }
-
-    Ok(genome)
+    Ok((genome, sequence_name.to_string()))
 }

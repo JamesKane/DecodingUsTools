@@ -25,9 +25,24 @@ pub fn collect_snp_calls(
     );
     let header = bam.header().clone();
 
+    // Get chromosome ID and length
+    let tid = header.tid(chromosome.as_bytes())
+        .ok_or_else(|| format!("Chromosome {} not found in BAM header", chromosome))?;
+    let chr_len = header.target_len(tid)
+        .ok_or_else(|| format!("No length information for chromosome {}", chromosome))?;
+
     // Create fetch definition for the entire chromosome
-    let fetch_def = format!("{}:1-", chromosome);
-    bam.fetch(&fetch_def)?;
+    let fetch_def = format!("{}:1-{}", chromosome, chr_len);
+    println!("Attempting to fetch region: {}", fetch_def);
+
+    match bam.fetch(&fetch_def) {
+        Ok(_) => (),
+        Err(e) => return Err(format!(
+            "Failed to fetch chromosome region '{}'. Error: {}. \
+            Make sure the chromosome name matches exactly and the BAM file is indexed.",
+            fetch_def, e
+        ).into())
+    }
 
     process_region(
         &mut bam,

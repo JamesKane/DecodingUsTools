@@ -1,12 +1,26 @@
 use crate::haplogroup::types::{Haplogroup, HaplogroupResult, LociType, Locus};
 use crate::utils::cache::{TreeCache, TreeType};
 use std::collections::HashMap;
+use indicatif::{ProgressBar, ProgressStyle};
 
 pub(crate) fn load_tree(tree_type: TreeType, provider: crate::cli::TreeProvider) -> Result<Haplogroup, Box<dyn std::error::Error>> {
+    let progress = ProgressBar::new_spinner();
+    progress.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} {msg}")
+            .unwrap(),
+    );
+    progress.set_message("Initializing tree cache...");
+
     // Get tree from cache
     let tree_cache = TreeCache::new(tree_type, provider)?;
-    let tree = tree_cache.get_tree()?;
 
+    progress.set_message("Fetching haplogroup tree...");
+    let tree = tree_cache.get_tree().map_err(|e| {
+        format!("Failed to get haplogroup tree: {}", e)
+    })?;
+
+    progress.set_message("Building tree structure...");
     let root_count = tree
         .all_nodes
         .values()
@@ -26,8 +40,11 @@ pub(crate) fn load_tree(tree_type: TreeType, provider: crate::cli::TreeProvider)
         .provider
         .build_tree(&tree, root_node.haplogroup_id, tree_type)
         .ok_or("Failed to build tree")?;
+
+    progress.finish_with_message("Tree loaded successfully");
     Ok(haplogroup_tree)
 }
+
 
 pub(crate) fn collect_snps<'a>(
     haplogroup: &'a Haplogroup,

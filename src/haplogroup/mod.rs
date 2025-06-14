@@ -36,22 +36,14 @@ pub fn analyze_haplogroup(
 
     // Use IndexedReader instead of Reader
     let bam = IndexedReader::from_path(&bam_file)?;
-    let genome = validation::validate_reference(&bam, tree_type)?;
+    let (genome, chromosome) = validation::validate_reference(&bam, tree_type)?;
 
     let haplogroup_tree = tree::load_tree(tree_type, provider)?;
 
     // Determine build ID and chromosome based on genome and tree type
-    let (build_id, chromosome) = match tree_type {
-        TreeType::YDNA => {
-            let accession = genome.get_accession("chrY")
-                .ok_or("No Y chromosome accession found for this genome")?;
-            (genome.name(), accession.accession)
-        },
-        TreeType::MTDNA => {
-            let accession = genome.get_accession("chrM")
-                .ok_or("No mitochondrial accession found for this genome")?;
-            ("rCRS", accession.accession)
-        },
+    let build_id = match tree_type {
+        TreeType::YDNA => genome.name(),
+        TreeType::MTDNA => "rCRS",
     };
 
     // Create map of positions to check
