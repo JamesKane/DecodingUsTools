@@ -9,6 +9,7 @@ pub fn run(
     min_depth: u32,
     min_quality: u8,
     provider: cli::TreeProvider,
+    show_snps: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     haplogroup::analyze_haplogroup(
         bam_file,
@@ -18,5 +19,6 @@ pub fn run(
         min_quality,
         TreeType::MTDNA,
         provider,
+        show_snps
     )
 }

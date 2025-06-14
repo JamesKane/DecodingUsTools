@@ -21,6 +21,7 @@ pub fn analyze_haplogroup(
     min_quality: u8,
     tree_type: TreeType,
     provider: crate::cli::TreeProvider,
+    show_snps: bool,
 ) -> Result<(), Box<dyn Error>> {
     // Initialize the FASTA reader
     let mut fasta_reader = bio::io::fasta::IndexedReader::from_file(&reference_file)?;
@@ -64,42 +65,125 @@ pub fn analyze_haplogroup(
         &mut snp_calls,
     )?;
 
-
     progress.set_message("Scoring haplogroups...");
 
     // Score haplogroups
     let mut scores = Vec::new();
-    scoring::calculate_haplogroup_score(&haplogroup_tree, &snp_calls, &mut scores, None, 0, build_id);
+    scoring::calculate_haplogroup_score(
+        &haplogroup_tree,
+        &snp_calls,
+        &mut scores,
+        None,
+        0,
+        build_id,
+    );
 
     let ordered_scores = collect_scored_paths(scores, &haplogroup_tree);
 
     // Use ordered_scores for writing the report
     let mut writer = BufWriter::new(File::create(output_file)?);
-    writeln!(
-        writer,
-        "Haplogroup\tScore\tMatching_SNPs\tMismatching_SNPs\tAncestral_Matches\tNo_Calls\tTotal_SNPs\tCumulative_SNPs\tDepth"
-    )?;
-    for result in ordered_scores {
+
+    if show_snps {
         writeln!(
             writer,
-            "{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            result.name,
-            result.score,
-            result.matching_snps,
-            result.mismatching_snps,
-            result.ancestral_matches,
-            result.no_calls,
-            result.total_snps,
-            result.cumulative_snps,
-            result.depth
+            "Haplogroup\tScore\tMatching_SNPs\tMismatching_SNPs\tAncestral_Matches\tNo_Calls\tTotal_SNPs\tCumulative_SNPs\tDepth\tMatching_SNP_Details\tMismatching_SNP_Details\tNo_Call_Details"
         )?;
+    } else {
+        writeln!(
+            writer,
+            "Haplogroup\tScore\tMatching_SNPs\tMismatching_SNPs\tAncestral_Matches\tNo_Calls\tTotal_SNPs\tCumulative_SNPs\tDepth"
+        )?;
+    }
+
+    for result in ordered_scores {
+        if show_snps {
+            let (matching_snps, mismatching_snps, no_call_snps) =
+                get_snp_details(&result.name, &haplogroup_tree, &snp_calls, build_id);
+            writeln!(
+                writer,
+                "{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                result.name,
+                result.score,
+                result.matching_snps,
+                result.mismatching_snps,
+                result.ancestral_matches,
+                result.no_calls,
+                result.total_snps,
+                result.cumulative_snps,
+                result.depth,
+                matching_snps,
+                mismatching_snps,
+                no_call_snps
+            )?;
+        } else {
+            writeln!(
+                writer,
+                "{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                result.name,
+                result.score,
+                result.matching_snps,
+                result.mismatching_snps,
+                result.ancestral_matches,
+                result.no_calls,
+                result.total_snps,
+                result.cumulative_snps,
+                result.depth
+            )?;
+        }
     }
 
     progress.finish_with_message("Analysis complete!");
     Ok(())
 }
 
+fn get_snp_details(
+    haplogroup_name: &str,
+    tree: &Haplogroup,
+    snp_calls: &HashMap<u32, (char, u32, f64)>,
+    build_id: &str,
+) -> (String, String, String) {
+    let mut matching = Vec::new();
+    let mut mismatching = Vec::new();
+    let mut no_calls = Vec::new();
 
+    if let Some(node) = find_haplogroup(tree, haplogroup_name) {
+        for locus in &node.loci {
+            if let Some(coord) = locus.coordinates.get(build_id) {
+                match snp_calls.get(&coord.position) {
+                    Some((called_base, depth, freq)) => {
+                        let derived_base = coord.derived.chars().next().unwrap();
+                        if *called_base == derived_base {
+                            matching.push(format!("{}:{}", locus.name, coord.position));
+                        } else {
+                            mismatching.push(format!("{}:{}", locus.name, coord.position));
+                        }
+                    }
+                    None => {
+                        no_calls.push(format!("{}:{}", locus.name, coord.position));
+                    }
+                }
+            }
+        }
+    }
+
+    (
+        matching.join(";"),
+        mismatching.join(";"),
+        no_calls.join(";")
+    )
+}
+
+fn find_haplogroup<'a>(tree: &'a Haplogroup, name: &str) -> Option<&'a Haplogroup> {
+    if tree.name == name {
+        return Some(tree);
+    }
+    for child in &tree.children {
+        if let Some(found) = find_haplogroup(child, name) {
+            return Some(found);
+        }
+    }
+    None
+}
 
 fn collect_scored_paths(scores: Vec<HaplogroupResult>, tree: &Haplogroup) -> Vec<HaplogroupResult> {
     let mut ordered_results = Vec::new();

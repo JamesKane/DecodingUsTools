@@ -78,6 +78,9 @@ pub enum Commands {
         /// Tree provider to use
         #[arg(long, value_enum, default_value = "ftdna")]
         provider: TreeProvider,
+        /// Show detailed SNP matches for each branch
+        #[arg(long)]
+        show_snps: bool,
     },
 
 
@@ -99,6 +102,9 @@ pub enum Commands {
         /// Tree provider to use
         #[arg(long, value_enum, default_value = "ftdna")]
         provider: TreeProvider,
+        /// Show detailed SNP matches for each branch
+        #[arg(long)]
+        show_snps: bool,
     },
 
 
