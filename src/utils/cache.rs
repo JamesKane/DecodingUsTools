@@ -1,9 +1,9 @@
-use crate::haplogroup::types::{Haplogroup, HaplogroupTree};
+use crate::haplogroup::types::HaplogroupTree;
+use crate::vendor::ftdna::FtdnaTreeProvider;
 pub(crate) use crate::vendor::TreeProvider;
 use chrono::{Datelike, Local};
 use directories::ProjectDirs;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::error::Error;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::PathBuf;
@@ -12,42 +12,6 @@ use std::path::PathBuf;
 pub enum TreeType {
     YDNA,
     MTDNA,
-}
-
-struct FtdnaTreeProvider;
-
-impl TreeProvider for FtdnaTreeProvider {
-    fn url(&self, tree_type: TreeType) -> &str {
-        match tree_type {
-            TreeType::YDNA => "https://www.familytreedna.com/public/y-dna-haplotree/get",
-            TreeType::MTDNA => "https://www.familytreedna.com/public/mt-dna-haplotree/get",
-        }
-    }
-
-    fn cache_prefix(&self, tree_type: TreeType) -> &str {
-        match tree_type {
-            TreeType::YDNA => "ytree",
-            TreeType::MTDNA => "mttree",
-        }
-    }
-
-    fn progress_message(&self, tree_type: TreeType) -> String {
-        format!(
-            "Downloading FTDNA {} tree...",
-            match tree_type {
-                TreeType::YDNA => "Y-DNA",
-                TreeType::MTDNA => "MT-DNA",
-            }
-        )
-    }
-
-    fn parse_tree(&self, data: &str) -> Result<HaplogroupTree, Box<dyn Error>> {
-        crate::vendor::ftdna::FtdnaTreeProvider::new().parse_tree(data)
-    }
-
-    fn build_tree(&self, tree: &HaplogroupTree, node_id: u32, tree_type: TreeType) -> Option<Haplogroup> {
-        crate::vendor::ftdna::FtdnaTreeProvider::new().build_tree(tree, node_id, tree_type)
-    }
 }
 
 pub struct TreeCache {
@@ -61,8 +25,8 @@ impl TreeCache {
         let proj_dirs = ProjectDirs::from("com", "decodingus", "decodingus-tools")
             .ok_or("Failed to determine project directories")?;
 
-        // Default to FTDNA provider for now
-        let provider = Box::new(FtdnaTreeProvider);
+        // Use FtdnaTreeProvider from vendor module
+        let provider = Box::new(FtdnaTreeProvider::new());
         let cache_dir = proj_dirs.cache_dir().join(provider.cache_prefix(tree_type));
         fs::create_dir_all(&cache_dir)?;
 

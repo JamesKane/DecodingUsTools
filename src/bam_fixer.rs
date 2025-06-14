@@ -4,7 +4,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use rust_htslib::bam::{self, Header, Read, Reader, Writer};
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
 use std::path::Path;
 use std::process::Command;
 use std::thread;
@@ -183,7 +183,7 @@ impl BamFixer {
     }
 
     fn extract_non_sq_headers(&self) -> Result<()> {
-        let mut reader = Reader::from_path(&self.input_bam).context("Failed to open input BAM")?;
+        let reader = Reader::from_path(&self.input_bam).context("Failed to open input BAM")?;
 
         let header = reader.header().clone();
         let mut output = File::create(&self.temp_original_non_sq_header)

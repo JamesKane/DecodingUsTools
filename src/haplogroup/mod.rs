@@ -4,7 +4,7 @@ mod tree;
 pub(crate) mod types;
 mod validation;
 
-use crate::haplogroup::types::{Haplogroup, HaplogroupResult, Snp};
+use crate::haplogroup::types::{Haplogroup, HaplogroupResult, Locus};
 use crate::utils::cache::TreeType;
 use indicatif::{ProgressBar, ProgressStyle};
 use rust_htslib::bam::IndexedReader;
@@ -35,30 +35,48 @@ pub fn analyze_haplogroup(
 
     // Use IndexedReader instead of Reader
     let bam = IndexedReader::from_path(&bam_file)?;
-    validation::validate_hg38_reference(&bam)?;
+    let genome = validation::validate_reference(&bam, tree_type)?;
 
     let haplogroup_tree = tree::load_tree(tree_type)?;
 
+    // Determine build ID and chromosome based on genome and tree type
+    let (build_id, chromosome) = match tree_type {
+        TreeType::YDNA => {
+            let accession = genome.get_accession("chrY")
+                .ok_or("No Y chromosome accession found for this genome")?;
+            (genome.name(), accession.accession)
+        },
+        TreeType::MTDNA => {
+            let accession = genome.get_accession("chrM")
+                .ok_or("No mitochondrial accession found for this genome")?;
+            ("rCRS", accession.accession)
+        },
+    };
+
     // Create map of positions to check
-    let mut positions: HashMap<u32, Vec<(&str, &Snp)>> = HashMap::new();
-    tree::collect_snps(&haplogroup_tree, &mut positions);
+    let mut positions: HashMap<u32, Vec<(&str, &Locus)>> = HashMap::new();
+    tree::collect_snps(&haplogroup_tree, &mut positions, build_id);
 
     let mut snp_calls: HashMap<u32, (char, u32, f64)> = HashMap::new();
 
+    // Pass both build_id and actual chromosome accession to collect_snp_calls
     caller::collect_snp_calls(
         min_depth,
         min_quality,
         &mut fasta_reader,
         bam,
+        build_id.parse().unwrap(),
+        chromosome,
         &mut positions,
         &mut snp_calls,
     )?;
+
 
     progress.set_message("Scoring haplogroups...");
 
     // Score haplogroups
     let mut scores = Vec::new();
-    scoring::calculate_haplogroup_score(&haplogroup_tree, &snp_calls, &mut scores, None, 0);
+    scoring::calculate_haplogroup_score(&haplogroup_tree, &snp_calls, &mut scores, None, 0, build_id);
 
     let ordered_scores = collect_scored_paths(scores, &haplogroup_tree);
 
@@ -87,6 +105,8 @@ pub fn analyze_haplogroup(
     progress.finish_with_message("Analysis complete!");
     Ok(())
 }
+
+
 
 fn collect_scored_paths(scores: Vec<HaplogroupResult>, tree: &Haplogroup) -> Vec<HaplogroupResult> {
     let mut ordered_results = Vec::new();

@@ -1,5 +1,4 @@
-use crate::haplogroup::types::{Haplogroup, HaplogroupResult, Snp};
-use crate::haplogroup::validation;
+use crate::haplogroup::types::{Haplogroup, HaplogroupResult, LociType, Locus};
 use crate::utils::cache::{TreeCache, TreeType};
 use std::collections::HashMap;
 
@@ -32,19 +31,22 @@ pub(crate) fn load_tree(tree_type: TreeType) -> Result<Haplogroup, Box<dyn std::
 
 pub(crate) fn collect_snps<'a>(
     haplogroup: &'a Haplogroup,
-    positions: &mut HashMap<u32, Vec<(&'a str, &'a Snp)>>,
+    positions: &mut HashMap<u32, Vec<(&'a str, &'a Locus)>>,
+    build_id: &str,
 ) {
-    for snp in &haplogroup.snps {
-        if validation::is_valid_snp(snp) {
-            positions
-                .entry(snp.position)
-                .or_default()
-                .push((&haplogroup.name, snp));
+    for locus in &haplogroup.loci {
+        if let Some(coord) = locus.coordinates.get(build_id) {
+            if matches!(locus.loci_type, LociType::SNP) {
+                positions
+                    .entry(coord.position)
+                    .or_default()
+                    .push((&haplogroup.name, locus));
+            }
         }
     }
 
     for child in &haplogroup.children {
-        collect_snps(child, positions);
+        collect_snps(child, positions, build_id);
     }
 }
 

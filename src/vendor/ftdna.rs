@@ -1,16 +1,18 @@
+use super::TreeProvider;
+use crate::haplogroup::types::{
+    Haplogroup, HaplogroupNode, HaplogroupTree, LociCoordinate, LociType, Locus,
+};
+use crate::utils::cache::TreeType;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::error::Error;
-use crate::haplogroup::types::{HaplogroupTree, HaplogroupNode, Variant, Haplogroup, Snp};
-use crate::utils::cache::TreeType;
-use super::TreeProvider;
 
 #[derive(Deserialize)]
 pub struct FtdnaVariant {
     #[serde(default)]
     pub variant: String,
     #[serde(default)]
-    pub position: Option<i32>,  // Changed to i32 to handle negative values
+    pub position: Option<i32>,
     #[serde(default)]
     pub ancestral: String,
     #[serde(default)]
@@ -21,13 +23,25 @@ pub struct FtdnaVariant {
     pub id: Option<u32>,
 }
 
-impl From<FtdnaVariant> for Variant {
+impl From<FtdnaVariant> for Locus {
     fn from(v: FtdnaVariant) -> Self {
-        Variant {
-            variant: v.variant,
-            pos: v.position.map(|p| p.unsigned_abs()).unwrap_or_default(),
-            ancestral: v.ancestral,
-            derived: v.derived,
+        let mut coordinates = HashMap::new();
+        if let Some(pos) = v.position {
+            coordinates.insert(
+                "GRCh38".to_string(),
+                LociCoordinate {
+                    position: pos.unsigned_abs(),
+                    chromosome: "chrY".to_string(),
+                    ancestral: v.ancestral,
+                    derived: v.derived,
+                }
+            );
+        }
+
+        Locus {
+            name: v.variant,
+            loci_type: LociType::SNP,
+            coordinates,
         }
     }
 }
@@ -58,34 +72,6 @@ struct FtdnaNode {
 struct FtdnaTreeJson {
     #[serde(rename = "allNodes")]
     nodes: HashMap<String, FtdnaNode>,
-}
-
-
-trait ToSnp {
-    fn to_snp(&self, tree_type: TreeType) -> Option<Snp>;
-}
-
-impl ToSnp for Variant {
-    fn to_snp(&self, tree_type: TreeType) -> Option<Snp> {
-        // Only convert variants that have all required fields
-        if self.variant.is_empty() || self.ancestral.is_empty() || self.derived.is_empty() {
-            return None;
-        }
-
-        Some(Snp {
-            position: self.pos,
-            ancestral: self.ancestral.clone(),
-            derived: self.derived.clone(),
-            chromosome: match tree_type {
-                TreeType::YDNA => "chrY".to_string(),
-                TreeType::MTDNA => "chrM".to_string(),
-            },
-            build: match tree_type {
-                TreeType::YDNA => "hg38".to_string(),
-                TreeType::MTDNA => "rCRS".to_string(),
-            },
-        })
-    }
 }
 
 pub struct FtdnaTreeProvider;
@@ -123,30 +109,36 @@ impl TreeProvider for FtdnaTreeProvider {
 
     fn parse_tree(&self, data: &str) -> Result<HaplogroupTree, Box<dyn Error>> {
         let ftdna_tree: FtdnaTreeJson = serde_json::from_str(data)?;
-        let all_nodes = ftdna_tree.nodes.into_iter().map(|(k, n)| {
-            let variants = n.variants.into_iter().map(Variant::from).collect();
-            (k, HaplogroupNode {
-                haplogroup_id: n.haplogroup_id,
-                parent_id: n.parent_id,
-                name: n.name,
-                is_root: n.is_root,
-                variants,
-                children: n.children,
+        let all_nodes = ftdna_tree
+            .nodes
+            .into_iter()
+            .map(|(k, n)| {
+                let loci = n.variants.into_iter().map(Locus::from).collect();
+                (
+                    k,
+                    HaplogroupNode {
+                        haplogroup_id: n.haplogroup_id,
+                        parent_id: n.parent_id,
+                        name: n.name,
+                        is_root: n.is_root,
+                        loci,
+                        children: n.children,
+                    },
+                )
             })
-        }).collect();
+            .collect();
 
         Ok(HaplogroupTree { all_nodes })
     }
 
-    fn build_tree(&self, tree: &HaplogroupTree, node_id: u32, tree_type: TreeType) -> Option<Haplogroup> {
+    fn build_tree(
+        &self,
+        tree: &HaplogroupTree,
+        node_id: u32,
+        tree_type: TreeType,
+    ) -> Option<Haplogroup> {
         let node_str = node_id.to_string();
         let node = tree.all_nodes.get(&node_str)?;
-
-        let snps: Vec<Snp> = node
-            .variants
-            .iter()
-            .filter_map(|v| v.to_snp(tree_type))
-            .collect();
 
         let children = node
             .children
@@ -159,10 +151,19 @@ impl TreeProvider for FtdnaTreeProvider {
             parent: if node.parent_id == 0 {
                 None
             } else {
-                Some(tree.all_nodes.get(&node.parent_id.to_string())?.name.clone())
+                Some(
+                    tree.all_nodes
+                        .get(&node.parent_id.to_string())?
+                        .name
+                        .clone(),
+                )
             },
-            snps,
+            loci: node.loci.clone(),
             children,
         })
+    }
+
+    fn supported_builds(&self) -> Vec<String> {
+        vec!["GRCh38".to_string(), "rCRS".to_string()]
     }
 }

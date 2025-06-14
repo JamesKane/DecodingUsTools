@@ -1,90 +1,57 @@
-use crate::haplogroup::types::Snp;
-use indicatif::{ProgressBar, ProgressStyle};
-use rust_htslib::bam::{IndexedReader, Read};
+use bio::io::fasta;
+
+use crate::haplogroup::types::Locus;
+use indicatif::ProgressBar;
+use rust_htslib::bam::{self, Read};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
 
-pub(crate) fn collect_snp_calls(
+pub fn collect_snp_calls(
     min_depth: u32,
     min_quality: u8,
-    mut fasta_reader: &mut bio::io::fasta::IndexedReader<File>,
-    mut bam: IndexedReader,
-    positions: &mut HashMap<u32, Vec<(&str, &Snp)>>,
-    mut snp_calls: &mut HashMap<u32, (char, u32, f64)>,
+    fasta_reader: &mut fasta::IndexedReader<File>,
+    mut bam: bam::IndexedReader,
+    build_id: String,
+    chromosome: String,
+    positions: &mut HashMap<u32, Vec<(&str, &Locus)>>,
+    snp_calls: &mut HashMap<u32, (char, u32, f64)>,
 ) -> Result<(), Box<dyn Error>> {
-    // Create a progress bar for BAM processing
-    let progress_style = ProgressStyle::default_bar()
-        .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({percent}%) {msg}")
-        .unwrap()
-        .progress_chars("#>-");
-
+    let progress = ProgressBar::new_spinner();
+    progress.set_style(
+        indicatif::ProgressStyle::default_spinner()
+            .template("{spinner:.green} Processing position {pos}")
+            .unwrap(),
+    );
     let header = bam.header().clone();
 
-    // Determine which chromosome we need to process
-    let need_y = positions
-        .iter()
-        .any(|(_, snps)| snps.iter().any(|(_, snp)| snp.chromosome == "chrY"));
-    let need_mt = positions
-        .iter()
-        .any(|(_, snps)| snps.iter().any(|(_, snp)| snp.chromosome == "chrM"));
+    // Create fetch definition for the entire chromosome
+    let fetch_def = format!("{}:1-", chromosome);
+    bam.fetch(&fetch_def)?;
 
-    // Process one chromosome based on the tree type
-    if need_y {
-        let tid = bam.header().tid(b"chrY").ok_or("chrY not found in BAM")?;
-        let total_len = bam.header().target_len(tid).unwrap_or(0);
+    process_region(
+        &mut bam,
+        &header,
+        fasta_reader,
+        positions,
+        &build_id,
+        min_depth,
+        min_quality,
+        snp_calls,
+        &progress,
+    )?;
 
-        let progress_bar = ProgressBar::new(total_len);
-        progress_bar.set_style(progress_style.clone());
-        progress_bar.set_message("Processing chromosome Y...");
-
-        // Create the region string for fetch
-        let region = format!("chrY:1-{}", total_len);
-        bam.fetch(&region)?;
-        process_region(
-            &mut bam,
-            &header,
-            &mut fasta_reader,
-            &positions,
-            min_depth,
-            min_quality,
-            &mut snp_calls,
-            &progress_bar,
-        )?;
-
-        progress_bar.finish_with_message("Chromosome Y processing complete");
-    } else if need_mt {
-        let tid = bam.header().tid(b"chrM").ok_or("chrM not found in BAM")?;
-        let total_len = bam.header().target_len(tid).unwrap_or(0);
-
-        let progress_bar = ProgressBar::new(total_len);
-        progress_bar.set_style(progress_style);
-        progress_bar.set_message("Processing mitochondrial DNA...");
-
-        // Create the region string for fetch
-        let region = format!("chrM:1-{}", total_len);
-        bam.fetch(&region)?;
-        process_region(
-            &mut bam,
-            &header,
-            &mut fasta_reader,
-            &positions,
-            min_depth,
-            min_quality,
-            &mut snp_calls,
-            &progress_bar,
-        )?;
-
-        progress_bar.finish_with_message("Mitochondrial DNA processing complete");
-    }
+    progress.finish_and_clear();
     Ok(())
 }
 
+
 fn process_region<R: Read>(
     bam: &mut R,
-    header: &rust_htslib::bam::HeaderView,
-    fasta: &mut bio::io::fasta::IndexedReader<File>,
-    positions: &HashMap<u32, Vec<(&str, &Snp)>>,
+    header: &bam::HeaderView,
+    fasta: &mut fasta::IndexedReader<File>,
+    positions: &HashMap<u32, Vec<(&str, &Locus)>>,
+    build_id: &str,
     min_depth: u32,
     min_quality: u8,
     snp_calls: &mut HashMap<u32, (char, u32, f64)>,
@@ -112,16 +79,27 @@ fn process_region<R: Read>(
                         let len = op.len() as usize;
                         for i in 0..len {
                             let vcf_pos = ref_pos + 1;
-                            if positions.contains_key(&vcf_pos) && read_pos + i < sequence.len() {
-                                let base_index = read_pos + i;
-                                let base = sequence[base_index].to_ascii_uppercase();
+                            // Check if this position has any loci and if they match the current chromosome
+                            if let Some(loci) = positions.get(&vcf_pos) {
+                                let relevant_loci = loci.iter().any(|(_, locus)| {
+                                    if let Some(coord) = locus.coordinates.get(build_id) {
+                                        coord.chromosome == ref_name
+                                    } else {
+                                        false
+                                    }
+                                });
 
-                                if let Ok(_) =
-                                    fasta.fetch(&ref_name, ref_pos as u64, (ref_pos + 1) as u64)
-                                {
-                                    let mut ref_seq = Vec::new();
-                                    fasta.read(&mut ref_seq)?;
-                                    coverage.entry(vcf_pos).or_default().push(base);
+                                if relevant_loci && read_pos + i < sequence.len() {
+                                    let base_index = read_pos + i;
+                                    let base = sequence[base_index].to_ascii_uppercase();
+
+                                    if let Ok(_) =
+                                        fasta.fetch(&ref_name, ref_pos as u64, (ref_pos + 1) as u64)
+                                    {
+                                        let mut ref_seq = Vec::new();
+                                        fasta.read(&mut ref_seq)?;
+                                        coverage.entry(vcf_pos).or_default().push(base);
+                                    }
                                 }
                             }
                             ref_pos += 1;

@@ -2,25 +2,40 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 #[derive(Deserialize, Debug, Clone)]
-pub struct Snp {
-    pub(crate) position: u32,
-    pub(crate) ancestral: String,
-    pub(crate) derived: String,
-    #[serde(skip)]
-    pub(crate) chromosome: String,
-    #[serde(skip)]
-    pub(crate) build: String,
+pub enum LociType {
+    SNP,
+    INDEL,
 }
 
-#[derive(Deserialize, Debug)]
-pub struct Variant {
-    pub variant: String,
-    #[serde(rename = "position", default)]
-    pub pos: u32,
-    #[serde(default)]
+#[derive(Deserialize, Debug, Clone)]
+pub struct LociCoordinate {
+    pub position: u32,
+    pub chromosome: String,
     pub ancestral: String,
-    #[serde(default)]
     pub derived: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct Locus {
+    pub name: String,
+    pub loci_type: LociType,
+    pub coordinates: HashMap<String, LociCoordinate>, // genbank_id -> coordinate info
+}
+
+#[derive(Deserialize)]
+pub struct ApiCoordinate {
+    pub start: u32,
+    pub stop: u32,
+    pub anc: String,
+    pub der: String,
+}
+
+#[derive(Deserialize)]
+pub struct ApiVariant {
+    pub name: String,
+    pub coordinates: HashMap<String, ApiCoordinate>,
+    #[serde(rename = "variantType")]
+    pub variant_type: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -29,7 +44,7 @@ pub struct HaplogroupNode {
     pub parent_id: u32,
     pub name: String,
     pub is_root: bool,
-    pub variants: Vec<Variant>,
+    pub loci: Vec<Locus>,
     pub children: Vec<u32>,
 }
 
@@ -43,7 +58,7 @@ pub struct HaplogroupTree {
 pub struct Haplogroup {
     pub(crate) name: String,
     pub(crate) parent: Option<String>,
-    pub(crate) snps: Vec<Snp>,
+    pub(crate) loci: Vec<Locus>,
     pub(crate) children: Vec<Haplogroup>,
 }
 
@@ -81,4 +96,138 @@ pub struct HaplogroupResult {
     pub(crate) total_snps: u32,
     pub(crate) cumulative_snps: u32, // Total unique SNPs from root to this branch
     pub(crate) depth: u32,
+}
+
+// Add conversion from ApiVariant to Locus
+impl TryFrom<ApiVariant> for Locus {
+    type Error = Box<dyn std::error::Error>;
+
+    fn try_from(api_variant: ApiVariant) -> Result<Self, Self::Error> {
+        let loci_type = match api_variant.variant_type.as_str() {
+            "SNP" => LociType::SNP,
+            "INDEL" => LociType::INDEL,
+            unknown => return Err(format!("Unknown variant type: {}", unknown).into()),
+        };
+
+        let coordinates = api_variant
+            .coordinates
+            .into_iter()
+            .map(|(genbank_id, coord)| {
+                (
+                    genbank_id,
+                    LociCoordinate {
+                        position: coord.start,
+                        chromosome: "chrY".to_string(), // This would come from a mapping of genbank_id to chromosome
+                        ancestral: coord.anc,
+                        derived: coord.der,
+                    },
+                )
+            })
+            .collect();
+
+        Ok(Locus {
+            name: api_variant.name,
+            loci_type,
+            coordinates,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReferenceGenome {
+    GRCh38,
+    CHM13v2,
+    GRCh37,
+}
+
+#[derive(Debug, Clone)]
+pub struct GenomeAccession {
+    pub genome: ReferenceGenome,
+    pub chromosome: String,
+    pub accession: String,
+    pub common_name: String,
+}
+
+impl ReferenceGenome {
+    pub fn accessions(&self) -> Vec<GenomeAccession> {
+        match self {
+            ReferenceGenome::GRCh38 => vec![
+                GenomeAccession {
+                    genome: self.clone(),
+                    chromosome: "chrY".to_string(),
+                    accession: "CM000686.2".to_string(), // GRCh38 Y chromosome
+                    common_name: "chrY".to_string(),
+                },
+                GenomeAccession {
+                    genome: self.clone(),
+                    chromosome: "chrM".to_string(),
+                    accession: "J01415.2".to_string(), // rCRS mitochondrial
+                    common_name: "chrM".to_string(),
+                },
+            ],
+            ReferenceGenome::CHM13v2 => vec![
+                GenomeAccession {
+                    genome: self.clone(),
+                    chromosome: "chrY".to_string(),
+                    accession: "CP086569.2".to_string(), // CHM13 Y chromosome
+                    common_name: "chrY".to_string(),
+                },
+                GenomeAccession {
+                    genome: self.clone(),
+                    chromosome: "chrM".to_string(),
+                    accession: "J01415.2".to_string(), // rCRS mitochondrial
+                    common_name: "chrM".to_string(),
+                },
+            ],
+            ReferenceGenome::GRCh37 => vec![
+                GenomeAccession {
+                    genome: self.clone(),
+                    chromosome: "chrY".to_string(),
+                    accession: "CM000686.1".to_string(), // GRCh37 Y chromosome
+                    common_name: "chrY".to_string(),
+                },
+                GenomeAccession {
+                    genome: self.clone(),
+                    chromosome: "chrM".to_string(),
+                    accession: "J01415.2".to_string(), // rCRS mitochondrial
+                    common_name: "chrM".to_string(),
+                },
+            ],
+        }
+    }
+
+    pub fn from_header(header: &rust_htslib::bam::HeaderView) -> Option<Self> {
+        for _tid in 0..header.target_count() {
+            // Get SQ lines from header text
+            let header_text = String::from_utf8_lossy(header.as_bytes());
+
+            // Look for assembly information in header text
+            if header_text.contains("AS:GRCh38") || header_text.contains("GCA_000001405.15") {
+                return Some(ReferenceGenome::GRCh38);
+            } else if header_text.contains("AS:CHM13") || header_text.contains("GCA_009914755.4") {
+                return Some(ReferenceGenome::CHM13v2);
+            } else if header_text.contains("AS:GRCh37") || header_text.contains("GCA_000001405.1") {
+                return Some(ReferenceGenome::GRCh37);
+            }
+        }
+        None
+    }
+    pub fn name(&self) -> &'static str {
+        match self {
+            ReferenceGenome::GRCh38 => "GRCh38",
+            ReferenceGenome::CHM13v2 => "T2T-CHM13v2.0",
+            ReferenceGenome::GRCh37 => "GRCh37",
+        }
+    }
+
+    pub fn get_accession(&self, common_name: &str) -> Option<GenomeAccession> {
+        self.accessions()
+            .into_iter()
+            .find(|acc| acc.common_name == common_name)
+            .or_else(|| {
+                self.accessions()
+                    .into_iter()
+                    .find(|acc| acc.accession == common_name)
+            })
+    }
 }

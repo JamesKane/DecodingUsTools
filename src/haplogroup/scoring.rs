@@ -1,6 +1,5 @@
-use crate::haplogroup::types::{Haplogroup, HaplogroupResult, HaplogroupScore};
+use crate::haplogroup::types::{Haplogroup, HaplogroupResult, HaplogroupScore, LociType};
 use std::collections::{HashMap, HashSet};
-use crate::haplogroup::validation;
 
 const HIGH_QUALITY_THRESHOLD: f64 = 0.7;
 const MEDIUM_QUALITY_THRESHOLD: f64 = 0.5;
@@ -12,71 +11,78 @@ pub(crate) fn calculate_haplogroup_score(
     scores: &mut Vec<HaplogroupResult>,
     parent_info: Option<&(HaplogroupScore, HashSet<u32>)>,
     depth: u32,
+    build_id: &str,
 ) -> (HaplogroupScore, HashSet<u32>) {
     let mut current_score = HaplogroupScore::default();
     let mut cumulative_snps = parent_info
         .map(|(_, snps)| snps.clone())
         .unwrap_or_default();
 
-    for snp in &haplogroup.snps {
-        if validation::is_valid_snp(snp) {
-            cumulative_snps.insert(snp.position);
+    // Filter valid loci and add their positions to cumulative_snps
+    let defining_loci: Vec<_> = haplogroup
+        .loci
+        .iter()
+        .filter(|locus| {
+            matches!(locus.loci_type, LociType::SNP) &&
+                locus.coordinates.contains_key(build_id)
+        })
+        .collect();
+
+    // Add positions to cumulative_snps
+    for locus in &defining_loci {
+        if let Some(coord) = locus.coordinates.get(build_id) {
+            cumulative_snps.insert(coord.position);
         }
     }
-
-    let defining_snps: Vec<_> = haplogroup
-        .snps
-        .iter()
-        .filter(|snp| validation::is_valid_snp(snp))
-        .collect();
 
     let mut branch_derived = 0;
     let mut branch_ancestral = 0;
     let mut branch_no_calls = 0;
     let mut branch_low_quality = 0;
 
-    // Process defining SNPs
-    for snp in &defining_snps {
-        if let Some((called_base, depth, freq)) = snp_calls.get(&snp.position) {
-            if *depth >= 4 {
-                let derived_base = snp.derived.chars().next().unwrap();
-                let ancestral_base = snp.ancestral.chars().next().unwrap();
+    // Process defining loci
+    for locus in &defining_loci {
+        if let Some(coord) = locus.coordinates.get(build_id) {
+            if let Some((called_base, depth, freq)) = snp_calls.get(&coord.position) {
+                if *depth >= MIN_DEPTH {
+                    let derived_base = coord.derived.chars().next().unwrap();
+                    let ancestral_base = coord.ancestral.chars().next().unwrap();
 
-                if *called_base == derived_base {
-                    if *freq >= HIGH_QUALITY_THRESHOLD {
-                        branch_derived += 1;
-                    } else if *freq >= MEDIUM_QUALITY_THRESHOLD {
+                    if *called_base == derived_base {
+                        if *freq >= HIGH_QUALITY_THRESHOLD {
+                            branch_derived += 1;
+                        } else if *freq >= MEDIUM_QUALITY_THRESHOLD {
+                            branch_derived += 1;
+                        } else {
+                            branch_low_quality += 1;
+                        }
+                    } else if *called_base == ancestral_base {
+                        if *freq >= HIGH_QUALITY_THRESHOLD {
+                            branch_ancestral += 1;
+                        } else {
+                            branch_low_quality += 1;
+                        }
+                    } else if *freq >= HIGH_QUALITY_THRESHOLD {
                         branch_derived += 1;
                     } else {
                         branch_low_quality += 1;
                     }
-                } else if *called_base == ancestral_base {
-                    if *freq >= HIGH_QUALITY_THRESHOLD {
-                        branch_ancestral += 1;
-                    } else {
-                        branch_low_quality += 1;
-                    }
-                } else if *freq >= HIGH_QUALITY_THRESHOLD {
-                    branch_derived += 1;
                 } else {
-                    branch_low_quality += 1;
+                    branch_no_calls += 1;
                 }
             } else {
                 branch_no_calls += 1;
             }
-        } else {
-            branch_no_calls += 1;
         }
     }
 
     // Calculate score with improved logic
     let total_calls = branch_derived + branch_ancestral + branch_low_quality;
     if total_calls > 0 {
-        // Revised scoring logic
+        // Scoring logic remains the same
         let branch_score = if branch_ancestral == 0 {
-            // No contradicting evidence
             match branch_derived {
-                d if d >= 1 => 3.08, // Any clean derived matches with no ancestral contradictions
+                d if d >= 1 => 3.08,
                 _ => 1.0,
             }
         } else {
@@ -97,7 +103,7 @@ pub(crate) fn calculate_haplogroup_score(
     current_score.matches += branch_derived;
     current_score.ancestral_matches += branch_ancestral;
     current_score.no_calls += branch_no_calls;
-    current_score.total_snps += defining_snps.len();
+    current_score.total_snps += defining_loci.len();
 
     if branch_ancestral > branch_derived * 10 {
         scores.push(HaplogroupResult {
@@ -107,13 +113,14 @@ pub(crate) fn calculate_haplogroup_score(
             mismatching_snps: branch_low_quality.try_into().unwrap_or(0),
             ancestral_matches: branch_ancestral.try_into().unwrap_or(0),
             no_calls: branch_no_calls.try_into().unwrap_or(0),
-            total_snps: defining_snps.len() as u32,
+            total_snps: defining_loci.len() as u32,
             cumulative_snps: cumulative_snps.len() as u32,
             depth,
         });
         return (current_score, cumulative_snps);
     }
 
+    // Process children recursively
     for child in &haplogroup.children {
         let (child_score, child_cumulative) = calculate_haplogroup_score(
             child,
@@ -121,6 +128,7 @@ pub(crate) fn calculate_haplogroup_score(
             scores,
             Some(&(current_score.clone(), cumulative_snps.clone())),
             depth + 1,
+            build_id,
         );
 
         scores.push(HaplogroupResult {
@@ -130,7 +138,7 @@ pub(crate) fn calculate_haplogroup_score(
             mismatching_snps: branch_low_quality.try_into().unwrap_or(0),
             ancestral_matches: child_score.ancestral_matches.try_into().unwrap_or(0),
             no_calls: child_score.no_calls.try_into().unwrap_or(0),
-            total_snps: defining_snps.len() as u32,
+            total_snps: defining_loci.len() as u32,
             cumulative_snps: child_cumulative.len() as u32,
             depth,
         });
