@@ -80,6 +80,24 @@ When a GAM file is surjected back via `vg surject` to a linear BAM, the results 
 - Removing the PanSN-spec prefix from the individual reads
 - Invoking samtools to sort the final result
 
+### Configuration
+
+The tool supports configuration via a TOML file located at:
+* Linux: ~/.config/decodingus-tools/config.toml
+* macOS: ~/Library/Application Support/com.decodingus.decodingus-tools/config.toml
+* Windows: %APPDATA%\decodingus-tools\config.toml
+
+Example configuration file:
+```toml
+# Time in seconds to wait for haplotree downloads
+download_timeout = 120
+```
+
+Available configuration options:
+* `download_timeout`: Time in seconds to wait for haplotree downloads
+
+You can create or modify this file manually to adjust the tool's behavior. The configuration file is optional - the tool will use default values if the file doesn't exist.
+
 
 ### Caching
 The branch finding algorithms store files in these locations:
