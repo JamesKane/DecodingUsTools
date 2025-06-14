@@ -127,12 +127,17 @@ impl TreeProvider for DecodingUsTreeProvider {
                                 "NC_000024.10" => "GRCh38",
                                 "NC_060948.1" => "T2T-CHM13v2.0",
                                 "CP086569.2" => "T2T-CHM13v2.0",
+                                "CM000686.1" => "GRCh37",
                                 _ => build.as_str(),
                             };
 
                             (build_id.to_string(), LociCoordinate {
                                 position: coord.start,
-                                chromosome: "chrY".to_string(),
+                                chromosome: if build_id == "GRCh37" {
+                                    "Y".to_string()
+                                } else {
+                                    "chrY".to_string()
+                                },
                                 ancestral: coord.anc,
                                 derived: coord.der,
                             })
