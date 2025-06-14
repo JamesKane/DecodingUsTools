@@ -2,6 +2,7 @@ use crate::haplogroup::types::{Haplogroup, HaplogroupResult, LociType, Locus};
 use crate::utils::cache::{TreeCache, TreeType};
 use std::collections::HashMap;
 use indicatif::{ProgressBar, ProgressStyle};
+use crate::cli;
 
 pub(crate) fn load_tree(tree_type: TreeType, provider: crate::cli::TreeProvider) -> Result<Haplogroup, Box<dyn std::error::Error>> {
     let progress = ProgressBar::new_spinner();
@@ -13,7 +14,7 @@ pub(crate) fn load_tree(tree_type: TreeType, provider: crate::cli::TreeProvider)
     progress.set_message("Initializing tree cache...");
 
     // Get tree from cache
-    let tree_cache = TreeCache::new(tree_type, provider)?;
+    let tree_cache = TreeCache::new(tree_type, provider.clone())?;
 
     progress.set_message("Fetching haplogroup tree...");
     let tree = tree_cache.get_tree().map_err(|e| {
@@ -21,20 +22,30 @@ pub(crate) fn load_tree(tree_type: TreeType, provider: crate::cli::TreeProvider)
     })?;
 
     progress.set_message("Building tree structure...");
-    let root_count = tree
-        .all_nodes
-        .values()
-        .filter(|node| node.parent_id == 0)
-        .count();
-    if root_count > 1 {
-        return Err("Multiple root nodes found in tree".into());
-    }
+    println!("Total nodes in tree: {}", tree.all_nodes.len());
 
-    let root_node = tree
-        .all_nodes
-        .values()
-        .find(|node| node.parent_id == 0)
-        .ok_or("No root node found")?;
+    // Find root node based on provider
+    let root_node = match provider {
+        cli::TreeProvider::DecodingUs => {
+            // For DecodingUs, use is_root flag
+            tree.all_nodes.values()
+                .find(|node| node.is_root)
+                .ok_or("No node marked as root found in DecodingUs tree")?
+        },
+        cli::TreeProvider::FTDNA => {
+            // For FTDNA, use parent_id == 0
+            let root = tree.all_nodes.values()
+                .find(|node| node.parent_id == 0)
+                .ok_or("No root node found in FTDNA tree")?;
+            if tree.all_nodes.values().filter(|node| node.parent_id == 0).count() > 1 {
+                return Err("Multiple root nodes found in FTDNA tree".into());
+            }
+            root
+        }
+    };
+
+    println!("Found root node: id={}, name='{}'",
+             root_node.haplogroup_id, root_node.name);
 
     let haplogroup_tree = tree_cache
         .provider
@@ -44,7 +55,6 @@ pub(crate) fn load_tree(tree_type: TreeType, provider: crate::cli::TreeProvider)
     progress.finish_with_message("Tree loaded successfully");
     Ok(haplogroup_tree)
 }
-
 
 pub(crate) fn collect_snps<'a>(
     haplogroup: &'a Haplogroup,

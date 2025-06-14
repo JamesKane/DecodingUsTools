@@ -27,13 +27,21 @@ pub struct ApiVariant {
 pub struct ApiNode {
     pub name: String,
     #[serde(rename = "parentName")]
-    pub parent_name: String,
+    parent_name: Option<String>,
     pub variants: Vec<ApiVariant>,
     #[serde(rename = "lastUpdated")]
     pub last_updated: String,
     #[serde(rename = "isBackbone")]
     pub is_backbone: bool,
 }
+
+fn deserialize_null_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::deserialize(deserializer)?.unwrap_or_default())
+}
+
 
 pub struct DecodingUsTreeProvider;
 
@@ -73,29 +81,34 @@ impl TreeProvider for DecodingUsTreeProvider {
 
         // First, create a mapping of names to IDs
         let mut name_to_id: HashMap<String, u32> = HashMap::new();
+        let mut root_id = None;
+
         for (idx, node) in api_nodes.iter().enumerate() {
             name_to_id.insert(node.name.clone(), idx as u32);
-        }
-
-        // Pre-calculate children relationships
-        let mut children_map: HashMap<String, Vec<u32>> = HashMap::new();
-        for (idx, node) in api_nodes.iter().enumerate() {
-            if !node.parent_name.is_empty() {
-                children_map
-                    .entry(node.parent_name.clone())
-                    .or_default()
-                    .push(idx as u32);
+            if node.parent_name.is_none() || node.parent_name.as_ref().map_or(true, |p| p.is_empty()) {
+                if root_id.is_some() {
+                    return Err("Multiple root nodes found in tree".into());
+                }
+                root_id = Some(idx as u32);
             }
         }
+
+        let root_id = root_id.ok_or("No root node found")?;
 
         // Create the nodes map
         let mut all_nodes = HashMap::new();
         for (idx, node) in api_nodes.into_iter().enumerate() {
             let haplogroup_id = idx as u32;
-            let parent_id = if node.parent_name.is_empty() {
-                0 // Root node
+            let is_root = haplogroup_id == root_id;
+
+            // Set parent_id to root_id for nodes that should be direct children of root
+            let parent_id = if is_root {
+                0  // Only the root node has parent_id 0
             } else {
-                *name_to_id.get(&node.parent_name).unwrap_or(&0)
+                match &node.parent_name {
+                    Some(parent) if !parent.is_empty() => *name_to_id.get(parent).unwrap_or(&root_id),
+                    _ => root_id  // If no parent is specified, attach to root
+                }
             };
 
             // Convert ApiVariant to Locus
@@ -125,24 +138,38 @@ impl TreeProvider for DecodingUsTreeProvider {
                 })
                 .collect();
 
-            // Get children from pre-calculated map
-            let children = children_map.get(&node.name).cloned().unwrap_or_default();
-
             all_nodes.insert(
                 haplogroup_id.to_string(),
                 HaplogroupNode {
                     haplogroup_id,
                     parent_id,
                     name: node.name,
-                    is_root: parent_id == 0,
+                    is_root,
                     loci,
-                    children,
+                    children: vec![],  // Will be populated later
                 },
             );
         }
 
+        // After creating all_nodes, collect the child relationships separately
+        let mut children_updates: Vec<(u32, u32)> = Vec::new(); // (parent_id, child_id)
+        for node in all_nodes.values() {
+            if !node.is_root {
+                children_updates.push((node.parent_id, node.haplogroup_id));
+            }
+        }
+
+        // Now update the children vectors
+        for (parent_id, child_id) in children_updates {
+            if let Some(parent) = all_nodes.get_mut(&parent_id.to_string()) {
+                parent.children.push(child_id);
+            }
+        }
+
         Ok(HaplogroupTree { all_nodes })
     }
+
+
 
     fn build_tree(&self, tree: &HaplogroupTree, node_id: u32, tree_type: TreeType) -> Option<Haplogroup> {
         let node_str = node_id.to_string();
