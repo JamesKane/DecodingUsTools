@@ -1,11 +1,13 @@
 use crate::haplogroup::types::HaplogroupTree;
 pub(crate) use crate::vendor::TreeProvider;
+use crate::config::config::Config;
 use chrono::{Datelike, Local};
 use directories::ProjectDirs;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::PathBuf;
+
 
 #[derive(Clone, Copy)]
 pub enum TreeType {
@@ -17,23 +19,28 @@ pub struct TreeCache {
     cache_dir: PathBuf,
     tree_type: TreeType,
     pub(crate) provider: Box<dyn TreeProvider>,
+    config: Config,
 }
+
 
 impl TreeCache {
     pub fn new(tree_type: TreeType, provider: crate::cli::TreeProvider) -> Result<Self, Box<dyn std::error::Error>> {
         let proj_dirs = ProjectDirs::from("com", "decodingus", "decodingus-tools")
             .ok_or("Failed to determine project directories")?;
-        
+
         let provider = crate::vendor::get_provider(provider);
         let cache_dir = proj_dirs.cache_dir().join(provider.cache_prefix(tree_type));
         fs::create_dir_all(&cache_dir)?;
+        let config = Config::load();
 
         Ok(TreeCache {
             cache_dir,
             tree_type,
             provider,
+            config,
         })
     }
+
 
     fn get_cache_path(&self) -> PathBuf {
         let now = Local::now();
@@ -87,7 +94,7 @@ impl TreeCache {
         progress.set_message(self.provider.progress_message(self.tree_type));
 
         let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
+            .timeout(std::time::Duration::from_secs(self.config.download_timeout))
             .build()?;
         let tree_json = client.get(self.provider.url(self.tree_type)).send()?.text()?;
 

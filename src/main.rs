@@ -4,6 +4,7 @@ mod commands;
 mod haplogroup;
 mod utils;
 mod vendor;
+mod config;
 
 use clap::Parser;
 
