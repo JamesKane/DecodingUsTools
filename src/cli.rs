@@ -36,7 +36,7 @@ pub enum Commands {
         min_depth: u32,
 
         /// Maximum depth before considering excessive coverage
-        #[arg(long, default_value_t = u32::MAX)]
+        #[arg(long, default_value = "500")]
         max_depth: u32,
 
         /// Minimum mapping quality for callable regions

@@ -2,10 +2,14 @@ use bio::io::fasta::IndexedReader;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rust_htslib::htslib::{BAM_FSECONDARY, BAM_FSUPPLEMENTARY, BAM_FREAD1};
 use rust_htslib::{bam, bam::Read};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::fs::File;
 use std::io::{BufWriter, Write};
+use crate::utils::histogram_plotter::{self, CoverageRange};
+use std::path::PathBuf;
+use std::io::{self, Result as IoResult};
+
 
 // TODO FIX-ME: This is still kinda slow.  About 2 minutes per contig in release mode
 #[derive(Clone)]
@@ -64,6 +68,8 @@ struct ContigStats {
     stats: CallableStats,
     progress_bar: ProgressBar,
     options: CallableOptions,
+    current_position: u32,
+    coverage_ranges: Vec<CoverageRange>,
 }
 
 impl ContigStats {
@@ -92,10 +98,15 @@ impl ContigStats {
             stats: CallableStats::default(),
             progress_bar,
             options,
+            current_position: 0,
+            coverage_ranges: Vec::new(),
         }
     }
 
-    fn process_position(&mut self, depth: u32, alignments: bam::pileup::Alignments, ref_base: u8) {
+    fn process_position(&mut self, pileup: &rust_htslib::bam::pileup::Pileup, depth: u32, alignments: bam::pileup::Alignments, ref_base: u8) {
+        // Get the position from the pileup alignment
+        self.current_position = pileup.pos() as u32;
+
         self.total_depth += depth as u64;
 
         // Fast-path checks first
@@ -169,6 +180,16 @@ impl ContigStats {
             self.stats.no_coverage += 1;
         }
 
+        let is_low_mapq = primary_count >= self.options.min_depth_for_low_mapq &&
+            (low_mapq_count as f64 / primary_count as f64) > self.options.max_low_mapq_fraction;
+
+        self.coverage_ranges.push(CoverageRange {
+            start: self.current_position,
+            end: self.current_position,
+            depth: qc_depth,
+            is_low_mapq,
+        });
+        
     }
 
     fn format_report_line(&self) -> String {
@@ -200,109 +221,278 @@ impl ContigStats {
     }
 }
 
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CalledState {
+    /// The reference base was an N, which is not considered callable
+    REF_N,
+    /// The base satisfied the minimum depth for calling but had less than maxDepth 
+    /// to avoid having EXCESSIVE_COVERAGE
+    CALLABLE,
+    /// Absolutely no reads were seen at this locus, regardless of filtering parameters
+    NO_COVERAGE,
+    /// There were fewer than minimum depth bases at the locus, after applying filters
+    LOW_COVERAGE,
+    /// More than maxDepth reads at the locus, indicating some sort of mapping problem
+    EXCESSIVE_COVERAGE,
+    /// More than maxFractionOfReadsWithLowMAPQ at the locus, indicating poor mapping quality
+    POOR_MAPPING_QUALITY,
+}
+
+impl CalledState {
+    pub fn from_usize(val: usize) -> Option<Self> {
+        match val {
+            0 => Some(Self::REF_N),
+            1 => Some(Self::CALLABLE),
+            2 => Some(Self::NO_COVERAGE),
+            3 => Some(Self::LOW_COVERAGE),
+            4 => Some(Self::EXCESSIVE_COVERAGE),
+            5 => Some(Self::POOR_MAPPING_QUALITY),
+            _ => None,
+        }
+    }
+}
+
+pub struct CallableLociCounter {
+    counts: [u64; 6],
+    current_state: Option<(String, u64, u64, CalledState)>,
+    bed_writer: BufWriter<File>,
+    summary_writer: BufWriter<File>,
+    // Coverage tracking for histograms
+    coverage_ranges: Vec<CoverageRange>,
+    current_pos: u32,
+    output_dir: PathBuf,
+}
+
+impl CallableLociCounter {
+    pub fn new(bed_file: &str, summary_file: &str) -> IoResult<Self> {
+        let output_dir = PathBuf::from(bed_file).parent()
+            .unwrap_or(&PathBuf::from("."))
+            .to_path_buf();
+
+        Ok(Self {
+            counts: [0; 6],
+            current_state: None,
+            bed_writer: BufWriter::new(File::create(bed_file)?),
+            summary_writer: BufWriter::new(File::create(summary_file)?),
+            coverage_ranges: Vec::new(),
+            current_pos: 0,
+            output_dir,
+        })
+    }
+
+    fn write_state(&mut self) -> IoResult<()> {
+        if let Some((contig, start, end, state)) = &self.current_state {
+            writeln!(
+                self.bed_writer,
+                "{}\t{}\t{}\t{:?}",
+                contig, start, end, state
+            )?;
+        }
+        Ok(())
+    }
+
+    fn finish_contig(&mut self, contig_name: &str) -> IoResult<()> {
+        self.write_state()?;
+
+        if !self.coverage_ranges.is_empty() {
+            let histogram_path = histogram_plotter::generate_histogram(
+                std::mem::take(&mut self.coverage_ranges),
+                &format!("{}_coverage", contig_name),
+                contig_name,
+            )?;
+
+            let final_path = self.output_dir
+                .join(format!("{}_coverage.svg", contig_name));
+            std::fs::copy(histogram_path, final_path)?;
+        }
+
+        Ok(())
+    }
+
+    fn process_position(
+        &mut self,
+        contig: &str,
+        pos: u32,
+        depth: u32,
+        is_low_mapq: bool,
+        state: CalledState,
+    ) -> IoResult<()> {
+        // Update position tracking
+        self.current_pos = pos;
+
+        // Add coverage range
+        self.coverage_ranges.push(CoverageRange {
+            start: pos,
+            end: pos,
+            depth,
+            is_low_mapq,
+        });
+
+        // Update state tracking
+        self.counts[state as usize] += 1;
+        match &mut self.current_state {
+            Some((cur_contig, start, end, cur_state)) => {
+                if contig != cur_contig || state != *cur_state || pos as u64 != *end + 1 {
+                    self.write_state()?;
+                    self.current_state = Some((contig.to_string(), pos as u64, pos as u64, state));
+                } else {
+                    *end = pos as u64;
+                }
+            }
+            None => {
+                self.current_state = Some((contig.to_string(), pos as u64, pos as u64, state));
+            }
+        }
+
+        Ok(())
+    }
+}
+
 pub fn run(
     bam_file: String,
     reference_file: String,
-    output_file: String,
+    output_bed: String,
+    output_summary: String,
     options: CallableOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Open the output file
-    let output_file = File::create(&output_file)?;
-    let mut writer = BufWriter::new(output_file);
+    let mut bam = bam::IndexedReader::from_path(&bam_file)?;
+    let header = bam.header().clone();
+    let mut fasta = IndexedReader::from_file(&reference_file)?;
+    let mut counter = CallableLociCounter::new(&output_bed, &output_summary)?;
 
-    // Write the header
-    writeln!(writer, "{}",
-             "CONTIG|START_POS|END_POS|NUM_READS|REF_N|NO_COV|LOW_COV|EXCESSIVE_COV|POOR_MQ|CALLABLE|COV_PERCENT|MEAN_DEPTH|MEAN_MQ"
-    )?;
+    // Create progress bars
+    let multi_progress = MultiProgress::new();
+    let main_progress = multi_progress.add(ProgressBar::new_spinner());
+    main_progress.set_style(ProgressStyle::default_spinner()
+        .template("{spinner:.green} [{elapsed_precise}] {msg}")
+        .unwrap());
+    main_progress.set_message("Analyzing coverage...");
 
-    let mut bam = bam::Reader::from_path(&bam_file)?;
-    bam.set_threads(4)?;
-    let header = bam::Header::from_template(bam.header());
-    let bam_header = bam.header().clone();
+    // Create contig progress bars map using usize as key
+    let mut contig_stats = HashMap::new();
 
-    // Get contig information
-    let mut contig_lengths = Vec::new();
-    for (key, records) in header.to_hashmap() {
-        if key == "SQ" {
-            for record in records {
-                if let (Some(sn), Some(ln)) = (record.get("SN"), record.get("LN")) {
-                    if let Ok(length) = ln.parse::<usize>() {
-                        contig_lengths.push((sn.to_string(), length));
+    // First pass to get contig lengths and set up progress bars
+    for tid in 0..header.target_names().len() {
+        let contig_name = std::str::from_utf8(header.tid2name(tid as u32))?;
+        let length = header.target_len(tid as u32).unwrap_or(0) as usize;
+        contig_stats.insert(
+            tid as usize, // Convert tid to usize
+            ContigStats::new(
+                contig_name.to_string(),
+                length,
+                &multi_progress,
+                options.clone(),
+            ),
+        );
+    }
+
+    let mut pileup = bam.pileup();
+    pileup.set_max_depth(if options.max_depth > 0 {
+        options.max_depth
+    } else {
+        500
+    });
+
+    let mut current_contig = String::new();
+    // Process pileup
+    for p in pileup {
+        let pileup = p?;
+        let tid = pileup.tid() as usize; // Convert tid to usize here
+        let pos = pileup.pos();
+        let contig = std::str::from_utf8(header.tid2name(pileup.tid()))?;
+        current_contig = contig.to_string();
+
+        // Update progress for current contig
+        if let Some(stats) = contig_stats.get_mut(&tid) {
+            stats.progress_bar.set_position(pos as u64);
+        }
+
+
+        // Get reference base
+        let mut seq = Vec::new();
+        fasta.fetch(contig, pos as u64, (pos + 1) as u64)?;
+        fasta.read(&mut seq)?;
+        let ref_base = seq.first().map(|&b| b).unwrap_or(b'N');
+
+        let mut raw_depth = 0;
+        let mut qc_depth = 0;
+        let mut low_mapq_count = 0;
+
+        // Process alignments
+        for align in pileup.alignments() {
+            raw_depth += 1;
+            let record = align.record();
+
+            if record.mapq() <= options.max_low_mapq {
+                low_mapq_count += 1;
+            }
+
+            if record.mapq() >= options.min_mapping_quality {
+                if let Some(qpos) = align.qpos() {
+                    if let Some(&qual) = record.qual().get(qpos) {
+                        if qual >= options.min_base_quality || align.is_del() {
+                            qc_depth += 1;
+                        }
                     }
                 }
             }
         }
-    }
+        // First determine the state based on the parameters
+        let state = if ref_base == b'N' || ref_base == b'n' {
+            CalledState::REF_N
+        } else if raw_depth == 0 {
+            CalledState::NO_COVERAGE
+        } else if raw_depth >= options.min_depth_for_low_mapq &&
+            (low_mapq_count as f64 / raw_depth as f64) > options.max_low_mapq_fraction {
+            CalledState::POOR_MAPPING_QUALITY
+        } else if qc_depth < options.min_depth {
+            CalledState::LOW_COVERAGE
+        } else if options.max_depth > 0 && qc_depth > options.max_depth {
+            CalledState::EXCESSIVE_COVERAGE
+        } else {
+            CalledState::CALLABLE
+        };
 
-    let mut pileup = bam.pileup();
-    pileup.set_max_depth(1000000);
+        let is_low_mapq = raw_depth >= options.min_depth_for_low_mapq &&
+            (low_mapq_count as f64 / raw_depth as f64) > options.max_low_mapq_fraction;
 
-    let multi_progress = MultiProgress::new();
+        // Now call process_position with the correct parameters
+        counter.process_position(
+            contig,
+            pos as u32,  // Convert to u32 as required
+            qc_depth,
+            is_low_mapq,
+            state,
+        )?;
 
-    let mut fasta_reader = IndexedReader::from_file(&reference_file)?;
-    let mut current_contig: Option<ContigStats> = None;
-    let mut current_seq = Vec::new();
-
-    // Process pileups
-    for p in pileup {
-        let pileup = p.unwrap();
-        let tid: i32 = pileup.tid().try_into().unwrap();
-        let tid_u32: u32 = tid.try_into().unwrap();
-        let ref_name = String::from_utf8(bam_header.tid2name(tid_u32).to_owned()).unwrap();
-        let pos = pileup.pos() as usize;
-
-        // If we've moved to a new contig
-        if current_contig.as_ref().map_or(true, |c| c.name != ref_name) {
-            if let Some(stats) = current_contig.take() {
-                stats
-                    .progress_bar
-                    .finish_with_message(format!("Completed {}", stats.name));
-                writeln!(writer, "{}", stats.format_report_line()).unwrap();
-            }
-
-            if let Some(&(_, length)) = contig_lengths.iter().find(|(name, _)| name == &ref_name) {
-                // Read the sequence for the new contig
-                current_seq.clear();
-                fasta_reader.fetch(&ref_name, 0, length as u64)?;
-                fasta_reader.read(&mut current_seq)?;
-
-                current_contig = Some(ContigStats::new(
-                    ref_name,
-                    length,
-                    &multi_progress,
-                    options.clone(),
-                ));
-            }
-        }
-
-        if let Some(ref mut contig_stats) = current_contig {
-            if pos < contig_stats.length {
-                let depth = pileup.depth();
-                let ref_base = if pos < current_seq.len() {
-                    current_seq[pos]
-                } else {
-                    b'N'
-                };
-                contig_stats.process_position(
-                    depth,
-                    pileup.alignments(), // Pass iterator directly instead of collecting
-                    ref_base,
-                );
-                contig_stats.progress_bar.set_position(pos as u64);
-            }
+        // Update contig stats
+        if let Some(stats) = contig_stats.get_mut(&tid) {
+            stats.process_position(&pileup, raw_depth, pileup.alignments(), ref_base);
         }
     }
 
-    // Print stats for the last contig
-    if let Some(stats) = current_contig {
-        stats
-            .progress_bar
-            .finish_with_message(format!("Completed {}", stats.name));
-        writeln!(writer, "{}", stats.format_report_line()).unwrap();
+    // Finish all progress bars
+    for (_, stats) in contig_stats.iter() {
+        stats.progress_bar.finish_with_message("Complete");
     }
+    main_progress.finish_with_message("Coverage analysis complete!");
 
-    // Wait for all progress bars to finish
-    multi_progress.clear().unwrap();
+    // Finish final contig
+    counter.finish_contig(&*current_contig)?;
+
+    let mut summary_writer = BufWriter::new(File::create(output_summary)?);
+
+    // Write header
+    writeln!(
+        summary_writer,
+        "Contig|Version|Length|UniqueReads|RefN|NoCoverage|LowCoverage|ExcessiveCoverage|PoorMappingQuality|Callable|CoveragePercent|AvgDepth|AvgMapQ"
+    )?;
+
+    // Write stats for each contig
+    for (_, stats) in &contig_stats {
+        writeln!(summary_writer, "{}", stats.format_report_line())?;
+    }
 
     Ok(())
 }

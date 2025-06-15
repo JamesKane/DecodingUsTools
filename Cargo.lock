@@ -509,6 +509,7 @@ dependencies = [
  "rust-htslib",
  "serde",
  "serde_json",
+ "tempfile",
  "toml",
 ]
 

@@ -37,7 +37,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 max_low_mapq,
                 max_low_mapq_fraction,
             );
-            commands::coverage::run(bam_file, reference_file, output_file, options)?;
+            let summary_file = format!("{}.summary", output_file);
+            commands::coverage::run(bam_file, reference_file, output_file, summary_file, options)?;
         }
         cli::Commands::FindYBranch {
             bam_file,
