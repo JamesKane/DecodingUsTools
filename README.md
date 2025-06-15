@@ -21,12 +21,31 @@ copy the binary to a location already in your PATH.
 ```shell
 decodingus-tools coverage \
   --reference <REFERENCE_FILE> \
-  -o <cov_report.txt> \
+  -o <callable_regions.bed> \
+  -s <table.txt> \
   <BAM_FILE> 
 ```
 
-Results in a coverage report for each contig in the BAM. Requires the original reference.
+Results in a callable region bed report for each contig in the BAM. Requires the original reference.
 Intended to replace `samtools coverage` and `gatk CallableLoci` with a single tool.
+
+Example output: (callable_regions.bed)
+```text
+chr1	10000	10006	LOW_COVERAGE
+chr1	10007	10131	POOR_MAPPING_QUALITY
+chr1	10132	10170	LOW_COVERAGE
+chr1	10171	10228	POOR_MAPPING_QUALITY
+chr1	10229	10402	LOW_COVERAGE
+chr1	10403	10405	POOR_MAPPING_QUALITY
+chr1	10406	10406	LOW_COVERAGE
+chr1	10407	10407	CALLABLE
+chr1	10408	10410	LOW_COVERAGE
+chr1	10411	10412	CALLABLE
+```
+
+Example output: (table.txt)
+```text
+```
 
 ### Y-DNA Branch Finding
 

@@ -325,6 +325,103 @@ impl CallableLociCounter {
 
 }
 
+// Add a helper function for natural sorting of chromosome names
+fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    // Special handling for chrM to always put it at the end
+    if a == "chrM" {
+        return std::cmp::Ordering::Greater;
+    }
+    if b == "chrM" {
+        return std::cmp::Ordering::Less;
+    }
+
+    // Special handling for chrX and chrY
+    if a == "chrX" && b == "chrY" {
+        return std::cmp::Ordering::Less;
+    }
+    if a == "chrY" && b == "chrX" {
+        return std::cmp::Ordering::Greater;
+    }
+    if a == "chrX" || a == "chrY" {
+        return std::cmp::Ordering::Greater;
+    }
+    if b == "chrX" || b == "chrY" {
+        return std::cmp::Ordering::Less;
+    }
+
+    // For other chromosomes, split into prefix and number
+    let (a_prefix, a_num) = a.split_at(a.chars().take_while(|c| !c.is_ascii_digit()).count());
+    let (b_prefix, b_num) = b.split_at(b.chars().take_while(|c| !c.is_ascii_digit()).count());
+
+    // Compare prefixes first
+    match a_prefix.cmp(b_prefix) {
+        std::cmp::Ordering::Equal => {
+            // If prefixes are equal, compare numbers
+            let a_num = a_num.parse::<u32>().unwrap_or(0);
+            let b_num = b_num.parse::<u32>().unwrap_or(0);
+            a_num.cmp(&b_num)
+        }
+        other => other,
+    }
+}
+
+/// This function performs a comprehensive analysis of a BAM file to determine callable loci and 
+/// generate corresponding statistics. The results are written to both BED and summary output files.
+///
+/// # Parameters
+///
+/// - `bam_file`: A `String` representing the path to the input BAM file. The BAM file should be indexed.
+/// - `reference_file`: A `String` representing the path to the reference genome file (FASTA format). The FASTA file should be indexed.
+/// - `output_bed`: A `String` representing the path to the output BED file where callable loci data will be written.
+/// - `output_summary`: A `String` representing the path to the output summary file where contig-level statistics will be stored.
+/// - `options`: A `CallableOptions` structure containing various threshold parameters and settings for processing.
+///
+/// # Returns
+///
+/// - `Ok(())`: If the function successfully completes the analysis and writes all outputs successfully.
+/// - `Err(Box<dyn std::error::Error>)`: If any error occurs during the processing, such as file I/O or data parsing issues.
+///
+/// # Behavior
+///
+/// 1. Reads the BAM and reference genome files.
+/// 2. Initializes progress bars for tracking coverage analysis and handles up to 25 contigs.
+/// 3. Configures parameters for pileup based on the options provided.
+/// 4. Iterates over pileup data to compute depth, mapping quality, base quality, and categorizes loci into callable or non-callable states.
+/// 5. Updates progress bars in real-time for processing transparency.
+/// 6. Writes callable loci results to the BED file.
+/// 7. Generates a contig summary in the summary file with the following statistics:
+///    - Contig name and length
+///    - Count of unique reads
+///    - Count of loci marked as reference 'N'
+///    - Counts of loci with no coverage, low coverage, excessive coverage, and poor mapping quality
+///    - Callable loci count
+///    - Coverage percentage, average depth, average mapping quality, and average base quality.
+/// 8. Handles file I/O errors gracefully and ensures all progress bars finish properly before exiting.
+///
+/// # Progress Bars
+///
+/// - A main spinner tracks overall task progression.
+/// - Individual progress bars track per-contig processing progress.
+///
+/// # Callable Loci State
+///
+/// For each position in the sequence, the following states are determined:
+/// - `REF_N`: Reference base is 'N' or 'n'.
+/// - `NO_COVERAGE`: No reads map to the position.
+/// - `LOW_COVERAGE`: Insufficient reads with quality mapping to the position.
+/// - `POOR_MAPPING_QUALITY`: High fraction of low-quality reads.
+/// - `EXCESSIVE_COVERAGE`: More reads than the maximum depth threshold.
+/// - `CALLABLE`: Meets all quality and depth criteria for being callable.
+///
+/// # Example Usage
+///
+/// ```
+/// use my_crate::callable_loci::run;
+/// use my_crate::callable_loci::CallableOptions;
+///
+/// let result = run(
+///     "input.bam".to_string(),
+///     "
 pub fn run(
     bam_file: String,
     reference_file: String,
@@ -470,11 +567,13 @@ pub fn run(
     // Write header
     writeln!(
         summary_writer,
-        "Contig|Version|Length|UniqueReads|RefN|NoCoverage|LowCoverage|ExcessiveCoverage|PoorMappingQuality|Callable|CoveragePercent|AvgDepth|AvgMapQ|AvgBaseQ"
+        "Contig|Start|Stop|UniqueReads|RefN|NoCoverage|LowCoverage|ExcessiveCoverage|PoorMappingQuality|Callable|CoveragePercent|AvgDepth|AvgMapQ|AvgBaseQ"
     )?;
 
     // Write stats for each contig
-    for (_, stats) in &contig_stats {
+    let mut sorted_stats: Vec<_> = contig_stats.iter().collect();
+    sorted_stats.sort_by(|a, b| natural_cmp(&a.1.name, &b.1.name));
+    for (_, stats) in sorted_stats {
         writeln!(summary_writer, "{}", stats.format_report_line())?;
     }
 
