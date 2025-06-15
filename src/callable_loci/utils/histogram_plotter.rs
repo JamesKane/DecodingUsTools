@@ -71,6 +71,40 @@ impl HistogramPlotter {
         }
     }
 
+    fn process_coverage_ranges(&self, ranges: &[CoverageRange]) -> (Vec<u32>, Vec<u32>) {
+        let array_size = ((self.max_cutoff - self.min_cutoff) / self.stride_len) as usize + 1;
+        let mut callable_depths = vec![0; array_size];
+        let mut low_qual_depths = vec![0; array_size];
+
+        for range in ranges {
+            // Convert genomic coordinates to array indices
+            let start_idx = ((range.start - self.min_cutoff) / self.stride_len) as usize;
+            let end_idx = ((range.end - self.min_cutoff) / self.stride_len) as usize;
+
+            // Record the range based on its state by incrementing counts
+            match range.state {
+                CalledState::CALLABLE => {
+                    for idx in start_idx..=end_idx {
+                        if idx < array_size {
+                            callable_depths[idx] += 1;
+                        }
+                    }
+                }
+                CalledState::POOR_MAPPING_QUALITY => {
+                    for idx in start_idx..=end_idx {
+                        if idx < array_size {
+                            low_qual_depths[idx] += 1;
+                        }
+                    }
+                }
+                // Other states (NO_COVERAGE, LOW_COVERAGE, etc.) are not displayed in the histogram
+                _ => {}
+            }
+        }
+
+        (callable_depths, low_qual_depths)
+    }
+
     fn generate_svg(
         &self,
         callable_depths: &[u32],
