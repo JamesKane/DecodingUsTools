@@ -268,11 +268,9 @@ impl CallableLociCounter {
     }
 
     fn finish_contig(&mut self, contig_name: &str) -> IoResult<()> {
-        println!("Finishing contig {}, ranges: {}", contig_name, self.coverage_ranges.len());
         self.write_state()?;
 
         if !self.coverage_ranges.is_empty() {
-            println!("Generating histogram for {}", contig_name);
             let histogram_path = histogram_plotter::generate_histogram(
                 std::mem::take(&mut self.coverage_ranges),
                 &format!("{}_coverage", contig_name),
@@ -282,9 +280,7 @@ impl CallableLociCounter {
             let final_path = self
                 .output_dir
                 .join(format!("{}_coverage.svg", contig_name));
-            println!("Copying histogram from {:?} to {:?}", histogram_path, final_path);
             std::fs::copy(histogram_path, final_path)?;
-            println!("Histogram generation complete");
         }
 
         Ok(())

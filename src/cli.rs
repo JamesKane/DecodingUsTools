@@ -27,9 +27,13 @@ pub enum Commands {
         #[arg(short = 'r', long = "reference")]
         reference_file: String,
 
-        /// Output file for the coverage report
-        #[arg(short = 'o', long = "output", default_value = "cov_report.txt")]
+        /// Output file for the callable regions
+        #[arg(short = 'o', long = "output", default_value = "callable_regions.bed")]
         output_file: String,
+
+        /// Output file for the callable regions
+        #[arg(short = 's', long = "summary", default_value = "table.txt")]
+        summary_file: String,
 
         /// Minimum depth for callable regions
         #[arg(long, default_value = "4")]

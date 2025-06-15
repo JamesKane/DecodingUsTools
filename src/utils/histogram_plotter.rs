@@ -120,15 +120,35 @@ impl HistogramPlotter {
     fn generate_svg(&self, callable_depths: &[u32], low_qual_depths: &[u32], contig_name: &str) -> String {
         let svg_width = ((self.max_cutoff - self.min_cutoff) / self.stride_len) as u32;
         let svg_height = self.bar_height;
+        // Add 30px padding at the top for the label
+        let total_height = svg_height + 30;
 
         let mut svg = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n");
 
-        // Root SVG tag
+        // Root SVG tag with increased height
         svg.push_str(&SvgTag::new("svg")
             .attr("xmlns", "http://www.w3.org/2000/svg")
             .attr("width", svg_width)
-            .attr("height", svg_height)
+            .attr("height", total_height)
             .attr("style", format!("background:#{:06x}", self.canvas_background))
+            .render(false));
+        svg.push('\n');
+
+        // Add contig name text
+        svg.push_str(&SvgTag::new("text")
+            .attr("x", svg_width / 2)
+            .attr("y", 20)
+            .attr("text-anchor", "middle")
+            .attr("font-family", "Arial")
+            .attr("font-size", "16")
+            .attr("fill", "#000000")
+            .render(false));
+        svg.push_str(contig_name);
+        svg.push_str("</text>\n");
+
+        // Create a group for the histogram and translate it down by 30px
+        svg.push_str(&SvgTag::new("g")
+            .attr("transform", "translate(0,30)")
             .render(false));
         svg.push('\n');
 
@@ -164,11 +184,38 @@ impl HistogramPlotter {
                 svg.push('\n');
             }
         }
-
-        // Add bar crawls (grid lines)
+        
+        // Add bar crawls (grid lines) with labels
         let bar_stride = svg_width / (self.max_cutoff / 5_000_000);
         for x in (0..svg_width).step_by(bar_stride as usize) {
-            for bar in (0..21).step_by(2) {
+            // Add position label first with background
+            let pos = (x * self.stride_len + self.min_cutoff) / 1_000_000;
+
+            // Add a white background rectangle for the text
+            svg.push_str(&SvgTag::new("rect")
+                .attr("x", x - bar_stride/2)
+                .attr("y", 0)
+                .attr("width", bar_stride)
+                .attr("height", 25)
+                .attr("fill", format!("#{:06x}", self.canvas_background))
+                .render(true));
+            svg.push('\n');
+
+            // Add the position label with larger font
+            svg.push_str(&SvgTag::new("text")
+                .attr("x", x)
+                .attr("y", 18)
+                .attr("text-anchor", "middle")
+                .attr("font-family", "Arial")
+                .attr("font-size", "16")
+                .attr("font-weight", "bold")
+                .attr("fill", "#800080")
+                .render(false));
+            svg.push_str(&format!("{}Mb", pos));
+            svg.push_str("</text>\n");
+
+            // Start bar crawls below the labels
+            for bar in (2..21).step_by(2) {
                 let bar_height = svg_height / 20;
                 let y = bar * bar_height;
                 for dx in -4..=4 {
@@ -179,12 +226,81 @@ impl HistogramPlotter {
                         .attr("y2", y + 25)
                         .attr("stroke", "#800080")
                         .attr("stroke-width", 1)
+                        .attr("stroke-opacity", "0.5")
                         .render(true));
                     svg.push('\n');
                 }
             }
         }
+        
+        // Add gradients definitions
+        svg.push_str("<defs>\n");
+        svg.push_str(&SvgTag::new("linearGradient")
+            .attr("id", "callableGradient")
+            .attr("x1", "0%")
+            .attr("y1", "0%")
+            .attr("x2", "100%")
+            .attr("y2", "0%")
+            .attr("fill", "url(#callableGradient)")
+            .render(false));
+        svg.push_str("<stop offset=\"0%\" style=\"stop-color:#007700;stop-opacity:0.8\"/>\n");
+        svg.push_str("<stop offset=\"100%\" style=\"stop-color:#00aa00;stop-opacity:0.8\"/>\n");
+        svg.push_str("</linearGradient>\n");
 
+        svg.push_str(&SvgTag::new("linearGradient")
+            .attr("id", "lowQualGradient")
+            .attr("x1", "0%")
+            .attr("y1", "0%")
+            .attr("x2", "100%")
+            .attr("y2", "0%")
+            .attr("fill", "url(#lowQualGradient)")
+            .render(false));
+        svg.push_str("<stop offset=\"0%\" style=\"stop-color:#770000;stop-opacity:0.8\"/>\n");
+        svg.push_str("<stop offset=\"100%\" style=\"stop-color:#aa0000;stop-opacity:0.8\"/>\n");
+        svg.push_str("</linearGradient>\n");
+        svg.push_str("</defs>\n");
+
+        // Add legend
+        let legend_y = svg_height - 40;
+        // Callable coverage legend
+        svg.push_str(&SvgTag::new("rect")
+            .attr("x", 10)
+            .attr("y", legend_y)
+            .attr("width", 20)
+            .attr("height", 10)
+            .attr("fill", "url(#callableGradient)")
+            .render(true));
+        svg.push_str(&SvgTag::new("text")
+            .attr("x", 35)
+            .attr("y", legend_y + 8)
+            .attr("font-family", "Arial")
+            .attr("font-size", "12")
+            .attr("fill", "#000000")
+            .render(false));
+        svg.push_str("Callable Coverage");
+        svg.push_str("</text>\n");
+
+        // Low quality coverage legend
+        svg.push_str(&SvgTag::new("rect")
+            .attr("x", 150)
+            .attr("y", legend_y)
+            .attr("width", 20)
+            .attr("height", 10)
+            .attr("fill", "url(#lowQualGradient)")
+            .render(true));
+        svg.push_str(&SvgTag::new("text")
+            .attr("x", 175)
+            .attr("y", legend_y + 8)
+            .attr("font-family", "Arial")
+            .attr("font-size", "12")
+            .attr("fill", "#000000")
+            .render(false));
+        svg.push_str("Low Quality Coverage");
+        svg.push_str("</text>\n");
+
+
+        // Close the group tag
+        svg.push_str("</g>\n");
         svg.push_str("</svg>\n");
         svg
     }
