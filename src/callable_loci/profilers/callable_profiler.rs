@@ -1,5 +1,5 @@
-use crate::utils::histogram_plotter;
-use crate::utils::histogram_plotter::CoverageRange;
+use crate::callable_loci::utils::histogram_plotter;
+use crate::callable_loci::utils::histogram_plotter::CoverageRange;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Result as IoResult;
