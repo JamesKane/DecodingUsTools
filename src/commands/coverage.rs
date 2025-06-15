@@ -355,7 +355,7 @@ pub fn run(
     let mut contig_stats = HashMap::new();
 
     // First pass to get contig lengths and set up progress bars
-    for tid in 0..header.target_names().len() {
+    for tid in 0..header.target_names().len().min(25) {
         let contig_name = std::str::from_utf8(header.tid2name(tid as u32))?;
         let length = header.target_len(tid as u32).unwrap_or(0) as usize;
         contig_stats.insert(
@@ -383,7 +383,13 @@ pub fn run(
         let tid = pileup.tid() as usize; // Convert tid to usize here
         let pos = pileup.pos();
         let contig = std::str::from_utf8(header.tid2name(pileup.tid()))?;
+        
+        // Detect contig transition
+        if current_contig != contig && !current_contig.is_empty() {
+            counter.finish_contig(&current_contig)?;
+        }
         current_contig = contig.to_string();
+
 
         // Update progress for current contig
         if let Some(stats) = contig_stats.get_mut(&tid) {
