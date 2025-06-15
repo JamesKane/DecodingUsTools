@@ -1,21 +1,12 @@
+use crate::callable_loci::types::{CalledState, CoverageRange};
 use crate::callable_loci::utils::histogram_plotter;
-use crate::callable_loci::utils::histogram_plotter::CoverageRange;
+use crate::callable_loci::CallableOptions;
 use std::collections::HashMap;
+use std::error::Error;
 use std::fs::File;
 use std::io::Result as IoResult;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
-
-#[allow(non_camel_case_types)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CalledState {
-    REF_N,
-    CALLABLE,
-    NO_COVERAGE,
-    LOW_COVERAGE,
-    EXCESSIVE_COVERAGE,
-    POOR_MAPPING_QUALITY,
-}
 
 pub struct CallableProfiler {
     counts: [u64; 6],
@@ -81,14 +72,45 @@ impl CallableProfiler {
         Ok(())
     }
 
-    pub(crate) fn process_position(
+    pub fn process_position(
         &mut self,
         contig: &str,
         pos: u32,
-        depth: u32,
-        is_low_mapq: bool,
+        ref_base: u8,
+        raw_depth: u32,
+        qc_depth: u32,
+        low_mapq_count: u32,
+        options: &CallableOptions,
+    ) -> Result<(), Box<dyn Error>> {
+        // Calculate is_low_mapq first as we need it for both state determination and range extension
+        let is_low_mapq = raw_depth >= options.min_depth_for_low_mapq
+            && (low_mapq_count as f64 / raw_depth as f64) > options.max_low_mapq_fraction;
+
+        // Determine state internally
+        let state = if ref_base == b'N' || ref_base == b'n' {
+            CalledState::REF_N
+        } else if raw_depth == 0 {
+            CalledState::NO_COVERAGE
+        } else if is_low_mapq {
+            CalledState::POOR_MAPPING_QUALITY
+        } else if qc_depth < options.min_depth {
+            CalledState::LOW_COVERAGE
+        } else if options.max_depth > 0 && qc_depth > options.max_depth {
+            CalledState::EXCESSIVE_COVERAGE
+        } else {
+            CalledState::CALLABLE
+        };
+
+        // Process state internally using both state and is_low_mapq for range extension
+        self.process_state(contig, pos, state)
+    }
+
+    fn process_state(
+        &mut self,
+        contig: &str,
+        pos: u32,
         state: CalledState,
-    ) -> IoResult<()> {
+    ) -> Result<(), Box<dyn Error>> {
         self.counts[state as usize] += 1;
 
         self.contig_counts
@@ -96,12 +118,11 @@ impl CallableProfiler {
             .or_insert([0; 6])[state as usize] += 1;
 
         match self.coverage_ranges.last_mut() {
-            Some(range) if range.can_merge(pos, depth, is_low_mapq) => {
+            Some(range) if range.can_merge(pos, state) => {
                 range.extend(pos);
             }
             _ => {
-                self.coverage_ranges
-                    .push(CoverageRange::new(pos, depth, is_low_mapq));
+                self.coverage_ranges.push(CoverageRange::new(pos, state));
             }
         }
 

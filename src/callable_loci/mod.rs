@@ -1,8 +1,9 @@
 mod options;
 mod profilers;
+mod types;
 mod utils;
 
-use crate::callable_loci::profilers::callable_profiler::CalledState;
+use crate::callable_loci::types::CalledState;
 use bio::io::fasta::IndexedReader;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 pub use options::CallableOptions;
@@ -124,28 +125,16 @@ pub fn run(
                 }
             }
         }
-        // First determine the state based on the parameters
-        let state = if ref_base == b'N' || ref_base == b'n' {
-            CalledState::REF_N
-        } else if raw_depth == 0 {
-            CalledState::NO_COVERAGE
-        } else if raw_depth >= options.min_depth_for_low_mapq
-            && (low_mapq_count as f64 / raw_depth as f64) > options.max_low_mapq_fraction
-        {
-            CalledState::POOR_MAPPING_QUALITY
-        } else if qc_depth < options.min_depth {
-            CalledState::LOW_COVERAGE
-        } else if options.max_depth > 0 && qc_depth > options.max_depth {
-            CalledState::EXCESSIVE_COVERAGE
-        } else {
-            CalledState::CALLABLE
-        };
 
-        let is_low_mapq = raw_depth >= options.min_depth_for_low_mapq
-            && (low_mapq_count as f64 / raw_depth as f64) > options.max_low_mapq_fraction;
-
-        // Now call process_position with the correct parameters
-        counter.process_position(contig, pos, qc_depth, is_low_mapq, state)?;
+        counter.process_position(
+            contig,
+            pos,
+            ref_base,
+            raw_depth,
+            qc_depth,
+            low_mapq_count,
+            &options,
+        )?;
 
         // Update contig stats
         if let Some(stats) = contig_stats.get_mut(&tid) {

@@ -2,36 +2,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use tempfile::Builder;
-
-
-#[derive(Debug)]
-pub(crate) struct CoverageRange {
-    pub(crate) start: u32,
-    pub(crate) end: u32,
-    pub(crate) depth: u32,
-    pub(crate) is_low_mapq: bool,
-}
-
-impl CoverageRange {
-    pub(crate) fn new(pos: u32, depth: u32, is_low_mapq: bool) -> Self {
-        Self {
-            start: pos,
-            end: pos,
-            depth,
-            is_low_mapq,
-        }
-    }
-
-    pub(crate) fn can_merge(&self, pos: u32, depth: u32, is_low_mapq: bool) -> bool {
-        self.end + 1 == pos &&
-            self.depth == depth &&
-            self.is_low_mapq == is_low_mapq
-    }
-
-    pub(crate) fn extend(&mut self, pos: u32) {
-        self.end = pos;
-    }
-}
+use crate::callable_loci::types::{CalledState, CoverageRange};
 
 struct HistogramPlotter {
     min_cutoff: u32,
@@ -95,28 +66,39 @@ impl HistogramPlotter {
     }
 
     fn process_coverage_ranges(&self, ranges: &[CoverageRange]) -> (Vec<u32>, Vec<u32>) {
-        // Add 1 to array_size to account for the max_cutoff value
         let array_size = ((self.max_cutoff - self.min_cutoff) / self.stride_len) as usize + 1;
         let mut callable_depths = vec![0; array_size];
         let mut low_qual_depths = vec![0; array_size];
 
         for range in ranges {
+            // Convert genomic coordinates to array indices
             let start_idx = ((range.start - self.min_cutoff) / self.stride_len) as usize;
             let end_idx = ((range.end - self.min_cutoff) / self.stride_len) as usize;
 
-            for idx in start_idx..=end_idx {
-                if idx < array_size {
-                    if range.is_low_mapq {
-                        low_qual_depths[idx] = range.depth;
-                    } else {
-                        callable_depths[idx] = range.depth;
+            // Record the range based on its state
+            match range.state {
+                CalledState::CALLABLE => {
+                    for idx in start_idx..=end_idx {
+                        if idx < array_size {
+                            callable_depths[idx] = 100; // Using 100 as full height
+                        }
                     }
-                }
+                },
+                CalledState::POOR_MAPPING_QUALITY => {
+                    for idx in start_idx..=end_idx {
+                        if idx < array_size {
+                            low_qual_depths[idx] = 100; // Using 100 as full height
+                        }
+                    }
+                },
+                // Other states (NO_COVERAGE, LOW_COVERAGE, etc.) are not displayed in the histogram
+                _ => {}
             }
         }
 
         (callable_depths, low_qual_depths)
     }
+
 
     fn generate_svg(&self, callable_depths: &[u32], low_qual_depths: &[u32], contig_name: &str) -> String {
         let svg_width = ((self.max_cutoff - self.min_cutoff) / self.stride_len) as u32;
