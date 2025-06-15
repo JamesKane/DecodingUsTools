@@ -5,6 +5,7 @@ mod config;
 mod haplogroup;
 mod utils;
 mod vendor;
+mod callable_loci;
 
 use clap::Parser;
 
@@ -29,7 +30,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             max_low_mapq,
             max_low_mapq_fraction,
         } => {
-            let options = commands::coverage::CallableOptions::new(
+            let options = callable_loci::CallableOptions::new(
                 min_depth,
                 max_depth,
                 min_mapping_quality,
@@ -38,7 +39,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 max_low_mapq,
                 max_low_mapq_fraction,
             );
-            commands::coverage::run(bam_file, reference_file, output_file, summary_file, options)?;
+            callable_loci::run(bam_file, reference_file, output_file, summary_file, options)?;
         }
         cli::Commands::FindYBranch {
             bam_file,

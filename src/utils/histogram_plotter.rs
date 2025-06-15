@@ -84,7 +84,7 @@ fn escape_xml_attr(s: &str) -> String {
 
 
 impl HistogramPlotter {
-    fn new(min_cutoff: u32, max_cutoff: u32, stride_len: u32, bar_height: u32, canvas_background: u32) -> Self {
+    pub fn new(min_cutoff: u32, max_cutoff: u32, stride_len: u32, bar_height: u32, canvas_background: u32) -> Self {
         Self {
             min_cutoff,
             max_cutoff,
@@ -95,7 +95,8 @@ impl HistogramPlotter {
     }
 
     fn process_coverage_ranges(&self, ranges: &[CoverageRange]) -> (Vec<u32>, Vec<u32>) {
-        let array_size = ((self.max_cutoff - self.min_cutoff) / self.stride_len) as usize;
+        // Add 1 to array_size to account for the max_cutoff value
+        let array_size = ((self.max_cutoff - self.min_cutoff) / self.stride_len) as usize + 1;
         let mut callable_depths = vec![0; array_size];
         let mut low_qual_depths = vec![0; array_size];
 
