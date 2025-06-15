@@ -1,15 +1,12 @@
+use crate::utils::histogram_plotter::{self, CoverageRange};
 use bio::io::fasta::IndexedReader;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use rust_htslib::htslib::{BAM_FSECONDARY, BAM_FSUPPLEMENTARY, BAM_FREAD1};
 use rust_htslib::{bam, bam::Read};
-use std::collections::{HashMap, HashSet};
-use std::convert::TryInto;
+use std::collections::HashMap;
 use std::fs::File;
+use std::io::Result as IoResult;
 use std::io::{BufWriter, Write};
-use crate::utils::histogram_plotter::{self, CoverageRange};
 use std::path::PathBuf;
-use std::io::{self, Result as IoResult};
-
 
 // TODO FIX-ME: This is still kinda slow.  About 2 minutes per contig in release mode
 #[derive(Clone)]
@@ -59,12 +56,13 @@ struct CallableStats {
 struct ContigStats {
     name: String,
     length: usize,
-    total_depth: u64,
-    mapq_sum: u64,
-    mapq_count: u64,
-    total_base_coverage: u64,
-    unique_read_count: u64,
-    seen_read_names: HashSet<Vec<u8>>,
+    n_covered_bases: u64,
+    summed_coverage: u64,
+    summed_baseq: u64,
+    summed_mapq: u64,
+    quality_bases: u64,
+    n_reads: u32,
+    n_selected_reads: u32,
     stats: CallableStats,
     progress_bar: ProgressBar,
     options: CallableOptions,
@@ -89,12 +87,13 @@ impl ContigStats {
         ContigStats {
             name,
             length,
-            total_depth: 0,
-            mapq_sum: 0,
-            mapq_count: 0,
-            total_base_coverage: 0,
-            unique_read_count: 0,
-            seen_read_names: HashSet::new(),
+            n_covered_bases: 0,
+            summed_coverage: 0,
+            summed_baseq: 0,
+            summed_mapq: 0,
+            quality_bases: 0,
+            n_reads: 0,
+            n_selected_reads: 0,
             stats: CallableStats::default(),
             progress_bar,
             options,
@@ -103,111 +102,88 @@ impl ContigStats {
         }
     }
 
-    fn process_position(&mut self, pileup: &rust_htslib::bam::pileup::Pileup, depth: u32, alignments: bam::pileup::Alignments, ref_base: u8) {
-        // Get the position from the pileup alignment
-        self.current_position = pileup.pos() as u32;
-
-        self.total_depth += depth as u64;
-
-        // Fast-path checks first
+    fn process_position(
+        &mut self,
+        raw_depth: u32,
+        alignments: bam::pileup::Alignments,
+        ref_base: u8,
+    ) {
         if ref_base == b'N' || ref_base == b'n' {
             self.stats.ref_n += 1;
             return;
         }
-        if depth == 0 {
-            self.stats.no_coverage += 1;
-            return;
-        }
 
-        let mut primary_count = 0;
         let mut qc_depth = 0;
         let mut low_mapq_count = 0;
-        let mut mapq_sum: u32 = 0;
 
         for aln in alignments {
             let record = aln.record();
-            let flag = record.flags() as u32;
-            if flag & (BAM_FSECONDARY | BAM_FSUPPLEMENTARY) == 0 {
-                primary_count += 1;
-                let mapq = record.mapq();
-                mapq_sum += mapq as u32;
+            let mapq = record.mapq();
 
-                // Count reads with low MAPQ
-                if mapq <= self.options.max_low_mapq {
-                    low_mapq_count += 1;
-                }
+            // Count total reads
+            self.n_reads += 1;
 
-                // Count bases that pass both mapping and base quality thresholds
-                if mapq >= self.options.min_mapping_quality {
-                    if let Some(qual) = aln.qpos().and_then(|q| record.qual().get(q)) {
-                        if *qual >= self.options.min_base_quality {
+            if mapq <= self.options.max_low_mapq {
+                low_mapq_count += 1;
+            }
+
+            // Check quality criteria
+            if mapq >= self.options.min_mapping_quality {
+                if let Some(qpos) = aln.qpos() {
+                    if let Some(&qual) = record.qual().get(qpos) {
+                        if qual >= self.options.min_base_quality {
                             qc_depth += 1;
+                            self.summed_baseq += qual as u64;
+                            self.quality_bases += 1;
                         }
                     }
                 }
-
-                // Track unique reads
-                let mut key = record.qname().to_vec();
-                key.push(if flag & BAM_FREAD1 != 0 { b'1' } else { b'2' });
-                if !self.seen_read_names.contains(&key) {
-                    self.seen_read_names.insert(key);
-                    self.unique_read_count += 1;
-                }
+                self.summed_mapq += mapq as u64;
+                self.n_selected_reads += 1;
             }
         }
 
-        // Update coverage statistics
-        self.total_base_coverage += primary_count as u64;
+        if raw_depth > 0 {
+            self.n_covered_bases += 1;
+            self.summed_coverage += raw_depth as u64;
+        }
 
-
-        if primary_count > 0 {
-            self.mapq_sum += mapq_sum as u64;
-            self.mapq_count += primary_count as u64;
-            
-            // Check for poor mapping quality using the new criteria
-            if primary_count >= self.options.min_depth_for_low_mapq &&
-                (low_mapq_count as f64 / primary_count as f64) > self.options.max_low_mapq_fraction {
-                self.stats.poor_mapping_quality += 1;
-                return;
-            }
-
-            match qc_depth {
-                d if d < self.options.min_depth => self.stats.low_coverage += 1,
-                d if d > self.options.max_depth => self.stats.excessive_coverage += 1,
-                _ => self.stats.callable += 1,
-            }
-        } else {
+        // Determine state
+        if raw_depth == 0 {
             self.stats.no_coverage += 1;
+        } else if raw_depth >= self.options.min_depth_for_low_mapq
+            && (low_mapq_count as f64 / raw_depth as f64) > self.options.max_low_mapq_fraction
+        {
+            self.stats.poor_mapping_quality += 1;
+        } else if qc_depth < self.options.min_depth {
+            self.stats.low_coverage += 1;
+        } else if self.options.max_depth > 0 && qc_depth > self.options.max_depth {
+            self.stats.excessive_coverage += 1;
+        } else {
+            self.stats.callable += 1;
         }
-
-        let is_low_mapq = primary_count >= self.options.min_depth_for_low_mapq &&
-            (low_mapq_count as f64 / primary_count as f64) > self.options.max_low_mapq_fraction;
-
-        self.coverage_ranges.push(CoverageRange {
-            start: self.current_position,
-            end: self.current_position,
-            depth: qc_depth,
-            is_low_mapq,
-        });
-        
     }
 
     fn format_report_line(&self) -> String {
         let total_bases = (self.length - self.stats.ref_n) as f64;
-        let avg_depth = self.total_depth as f64 / total_bases;
-        let avg_mapq = if self.mapq_count > 0 {
-            self.mapq_sum as f64 / self.mapq_count as f64
+        let avg_depth = self.summed_coverage as f64 / total_bases;
+        let avg_mapq = if self.n_selected_reads > 0 {
+            self.summed_mapq as f64 / self.n_selected_reads as f64
         } else {
             0.0
         };
-        let coverage_percent =
-            ((total_bases - self.stats.no_coverage as f64) / total_bases) * 100.0;
+        let avg_baseq = if self.quality_bases > 0 {
+            self.summed_baseq as f64 / self.quality_bases as f64
+        } else {
+            0.0
+        };
+        let coverage_percent = (self.n_covered_bases as f64 / total_bases) * 100.0;
 
         format!(
-            "{}|1|{}|{}|{}|{}|{}|{}|{}|{}|{:.2}|{:.2}|{:.1}",
+            "{}|1|{}|{}|{}|{}|{}|{}|{}|{}|{:.2}|{:.2}|{:.1}|{:.1}",
             self.name,
             self.length,
-            self.unique_read_count,
+            self.n_selected_reads,
             self.stats.ref_n,
             self.stats.no_coverage,
             self.stats.low_coverage,
@@ -216,7 +192,8 @@ impl ContigStats {
             self.stats.callable,
             coverage_percent,
             avg_depth,
-            avg_mapq
+            avg_mapq,
+            avg_baseq
         )
     }
 }
@@ -226,7 +203,7 @@ impl ContigStats {
 pub enum CalledState {
     /// The reference base was an N, which is not considered callable
     REF_N,
-    /// The base satisfied the minimum depth for calling but had less than maxDepth 
+    /// The base satisfied the minimum depth for calling but had less than maxDepth
     /// to avoid having EXCESSIVE_COVERAGE
     CALLABLE,
     /// Absolutely no reads were seen at this locus, regardless of filtering parameters
@@ -257,8 +234,6 @@ pub struct CallableLociCounter {
     counts: [u64; 6],
     current_state: Option<(String, u64, u64, CalledState)>,
     bed_writer: BufWriter<File>,
-    summary_writer: BufWriter<File>,
-    // Coverage tracking for histograms
     coverage_ranges: Vec<CoverageRange>,
     current_pos: u32,
     output_dir: PathBuf,
@@ -266,7 +241,8 @@ pub struct CallableLociCounter {
 
 impl CallableLociCounter {
     pub fn new(bed_file: &str, summary_file: &str) -> IoResult<Self> {
-        let output_dir = PathBuf::from(bed_file).parent()
+        let output_dir = PathBuf::from(bed_file)
+            .parent()
             .unwrap_or(&PathBuf::from("."))
             .to_path_buf();
 
@@ -274,7 +250,6 @@ impl CallableLociCounter {
             counts: [0; 6],
             current_state: None,
             bed_writer: BufWriter::new(File::create(bed_file)?),
-            summary_writer: BufWriter::new(File::create(summary_file)?),
             coverage_ranges: Vec::new(),
             current_pos: 0,
             output_dir,
@@ -293,18 +268,23 @@ impl CallableLociCounter {
     }
 
     fn finish_contig(&mut self, contig_name: &str) -> IoResult<()> {
+        println!("Finishing contig {}, ranges: {}", contig_name, self.coverage_ranges.len());
         self.write_state()?;
 
         if !self.coverage_ranges.is_empty() {
+            println!("Generating histogram for {}", contig_name);
             let histogram_path = histogram_plotter::generate_histogram(
                 std::mem::take(&mut self.coverage_ranges),
                 &format!("{}_coverage", contig_name),
                 contig_name,
             )?;
 
-            let final_path = self.output_dir
+            let final_path = self
+                .output_dir
                 .join(format!("{}_coverage.svg", contig_name));
+            println!("Copying histogram from {:?} to {:?}", histogram_path, final_path);
             std::fs::copy(histogram_path, final_path)?;
+            println!("Histogram generation complete");
         }
 
         Ok(())
@@ -318,19 +298,18 @@ impl CallableLociCounter {
         is_low_mapq: bool,
         state: CalledState,
     ) -> IoResult<()> {
-        // Update position tracking
-        self.current_pos = pos;
-
-        // Add coverage range
-        self.coverage_ranges.push(CoverageRange {
-            start: pos,
-            end: pos,
-            depth,
-            is_low_mapq,
-        });
-
-        // Update state tracking
         self.counts[state as usize] += 1;
+        
+        match self.coverage_ranges.last_mut() {
+            Some(range) if range.can_merge(pos, depth, is_low_mapq) => {
+                range.extend(pos);
+            }
+            _ => {
+                self.coverage_ranges.push(CoverageRange::new(pos, depth, is_low_mapq));
+            }
+        }
+        
+        // Handle state tracking (existing code)
         match &mut self.current_state {
             Some((cur_contig, start, end, cur_state)) => {
                 if contig != cur_contig || state != *cur_state || pos as u64 != *end + 1 {
@@ -347,6 +326,7 @@ impl CallableLociCounter {
 
         Ok(())
     }
+
 }
 
 pub fn run(
@@ -364,9 +344,11 @@ pub fn run(
     // Create progress bars
     let multi_progress = MultiProgress::new();
     let main_progress = multi_progress.add(ProgressBar::new_spinner());
-    main_progress.set_style(ProgressStyle::default_spinner()
-        .template("{spinner:.green} [{elapsed_precise}] {msg}")
-        .unwrap());
+    main_progress.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} [{elapsed_precise}] {msg}")
+            .unwrap(),
+    );
     main_progress.set_message("Analyzing coverage...");
 
     // Create contig progress bars map using usize as key
@@ -408,7 +390,6 @@ pub fn run(
             stats.progress_bar.set_position(pos as u64);
         }
 
-
         // Get reference base
         let mut seq = Vec::new();
         fasta.fetch(contig, pos as u64, (pos + 1) as u64)?;
@@ -443,8 +424,9 @@ pub fn run(
             CalledState::REF_N
         } else if raw_depth == 0 {
             CalledState::NO_COVERAGE
-        } else if raw_depth >= options.min_depth_for_low_mapq &&
-            (low_mapq_count as f64 / raw_depth as f64) > options.max_low_mapq_fraction {
+        } else if raw_depth >= options.min_depth_for_low_mapq
+            && (low_mapq_count as f64 / raw_depth as f64) > options.max_low_mapq_fraction
+        {
             CalledState::POOR_MAPPING_QUALITY
         } else if qc_depth < options.min_depth {
             CalledState::LOW_COVERAGE
@@ -454,13 +436,13 @@ pub fn run(
             CalledState::CALLABLE
         };
 
-        let is_low_mapq = raw_depth >= options.min_depth_for_low_mapq &&
-            (low_mapq_count as f64 / raw_depth as f64) > options.max_low_mapq_fraction;
+        let is_low_mapq = raw_depth >= options.min_depth_for_low_mapq
+            && (low_mapq_count as f64 / raw_depth as f64) > options.max_low_mapq_fraction;
 
         // Now call process_position with the correct parameters
         counter.process_position(
             contig,
-            pos as u32,  // Convert to u32 as required
+            pos,
             qc_depth,
             is_low_mapq,
             state,
@@ -468,7 +450,7 @@ pub fn run(
 
         // Update contig stats
         if let Some(stats) = contig_stats.get_mut(&tid) {
-            stats.process_position(&pileup, raw_depth, pileup.alignments(), ref_base);
+            stats.process_position(raw_depth, pileup.alignments(), ref_base);
         }
     }
 
@@ -486,7 +468,7 @@ pub fn run(
     // Write header
     writeln!(
         summary_writer,
-        "Contig|Version|Length|UniqueReads|RefN|NoCoverage|LowCoverage|ExcessiveCoverage|PoorMappingQuality|Callable|CoveragePercent|AvgDepth|AvgMapQ"
+        "Contig|Version|Length|UniqueReads|RefN|NoCoverage|LowCoverage|ExcessiveCoverage|PoorMappingQuality|Callable|CoveragePercent|AvgDepth|AvgMapQ|AvgBaseQ"
     )?;
 
     // Write stats for each contig

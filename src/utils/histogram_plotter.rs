@@ -12,6 +12,27 @@ pub(crate) struct CoverageRange {
     pub(crate) is_low_mapq: bool,
 }
 
+impl CoverageRange {
+    pub(crate) fn new(pos: u32, depth: u32, is_low_mapq: bool) -> Self {
+        Self {
+            start: pos,
+            end: pos,
+            depth,
+            is_low_mapq,
+        }
+    }
+
+    pub(crate) fn can_merge(&self, pos: u32, depth: u32, is_low_mapq: bool) -> bool {
+        self.end + 1 == pos &&
+            self.depth == depth &&
+            self.is_low_mapq == is_low_mapq
+    }
+
+    pub(crate) fn extend(&mut self, pos: u32) {
+        self.end = pos;
+    }
+}
+
 struct HistogramPlotter {
     min_cutoff: u32,
     max_cutoff: u32,
