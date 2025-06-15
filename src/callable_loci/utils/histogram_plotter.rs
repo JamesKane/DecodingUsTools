@@ -71,40 +71,6 @@ impl HistogramPlotter {
         }
     }
 
-    fn process_coverage_ranges(&self, ranges: &[CoverageRange]) -> (Vec<u32>, Vec<u32>) {
-        let array_size = ((self.max_cutoff - self.min_cutoff) / self.stride_len) as usize + 1;
-        let mut callable_depths = vec![0; array_size];
-        let mut low_qual_depths = vec![0; array_size];
-
-        for range in ranges {
-            // Convert genomic coordinates to array indices
-            let start_idx = ((range.start - self.min_cutoff) / self.stride_len) as usize;
-            let end_idx = ((range.end - self.min_cutoff) / self.stride_len) as usize;
-
-            // Record the range based on its state by incrementing counts
-            match range.state {
-                CalledState::CALLABLE => {
-                    for idx in start_idx..=end_idx {
-                        if idx < array_size {
-                            callable_depths[idx] += 1;
-                        }
-                    }
-                }
-                CalledState::POOR_MAPPING_QUALITY => {
-                    for idx in start_idx..=end_idx {
-                        if idx < array_size {
-                            low_qual_depths[idx] += 1;
-                        }
-                    }
-                }
-                // Other states (NO_COVERAGE, LOW_COVERAGE, etc.) are not displayed in the histogram
-                _ => {}
-            }
-        }
-
-        (callable_depths, low_qual_depths)
-    }
-
     fn generate_svg(
         &self,
         callable_depths: &[u32],
@@ -112,14 +78,20 @@ impl HistogramPlotter {
         contig_name: &str,
     ) -> String {
         let svg_width = ((self.max_cutoff - self.min_cutoff) / self.stride_len) as u32;
-        let svg_height = self.bar_height;
-        // Add 30px padding at the top for the label
-        let total_height = svg_height + 30;
+        let histogram_height = self.bar_height;
+        let title_height = 30;
+        let header_padding = 15; // Padding between title and header content
+        let label_height = 25; // Height for Mb labels
+        let header_separator = 10; // Space between header and histogram
+        let legend_height = 50;
+        let total_header_height = title_height + header_padding + label_height + header_separator;
+        let total_height = total_header_height + histogram_height + legend_height;
+        let notch_height = 10;
 
         let mut svg =
             String::from("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n");
 
-        // Root SVG tag with increased height
+        // Root SVG tag
         svg.push_str(
             &SvgTag::new("svg")
                 .attr("xmlns", "http://www.w3.org/2000/svg")
@@ -133,7 +105,7 @@ impl HistogramPlotter {
         );
         svg.push('\n');
 
-        // Add contig name text
+        // Title (contig name at the top)
         svg.push_str(
             &SvgTag::new("text")
                 .attr("x", svg_width / 2)
@@ -141,32 +113,112 @@ impl HistogramPlotter {
                 .attr("text-anchor", "middle")
                 .attr("font-family", "Arial")
                 .attr("font-size", "16")
+                .attr("font-weight", "bold")
                 .attr("fill", "#000000")
                 .render(false),
         );
         svg.push_str(contig_name);
         svg.push_str("</text>\n");
 
-        // Create a group for the histogram and translate it down by 30px
+        // Header separator line
         svg.push_str(
-            &SvgTag::new("g")
-                .attr("transform", "translate(0,30)")
-                .render(false),
+            &SvgTag::new("line")
+                .attr("x1", 0)
+                .attr("y1", total_header_height - header_separator / 2)
+                .attr("x2", svg_width)
+                .attr("y2", total_header_height - header_separator / 2)
+                .attr("stroke", "#808080")
+                .attr("stroke-width", 1)
+                .render(true),
         );
         svg.push('\n');
 
-        // Plot histograms
+        // Header background
+        svg.push_str(
+            &SvgTag::new("rect")
+                .attr("x", 0)
+                .attr("y", 0)
+                .attr("width", svg_width)
+                .attr("height", total_header_height - header_separator)
+                .attr("fill", "#F8F8F8")
+                .attr("opacity", "0.8")
+                .render(true),
+        );
+        svg.push('\n');
+
+        // Draw position labels and notches
+        let crawl_interval = 10_000_000; // 10Mb
+        let positions: Vec<u32> = (0..=self.max_cutoff)
+            .step_by(crawl_interval as usize)
+            .collect();
+
+        let label_y = title_height + header_padding + label_height - 5;
+
+        for pos in positions {
+            let x = ((pos - self.min_cutoff) / self.stride_len) as i32;
+
+            if x >= svg_width as i32 || x < 0 {
+                continue;
+            }
+
+            let is_label_fully_visible = x >= 20 && x <= (svg_width as i32 - 20);
+
+            if is_label_fully_visible {
+                let mb_pos = pos / 1_000_000;
+                // Position label
+                svg.push_str(
+                    &SvgTag::new("text")
+                        .attr("x", x)
+                        .attr("y", label_y)
+                        .attr("text-anchor", "middle")
+                        .attr("font-family", "Arial")
+                        .attr("font-size", "16")
+                        .attr("font-weight", "bold")
+                        .attr("fill", "#800080")
+                        .render(false),
+                );
+                svg.push_str(&format!("{}Mb", mb_pos));
+                svg.push_str("</text>\n");
+            }
+
+            // Top notch (at histogram top)
+            svg.push_str(
+                &SvgTag::new("line")
+                    .attr("x1", x)
+                    .attr("y1", total_header_height)
+                    .attr("x2", x)
+                    .attr("y2", total_header_height + notch_height)
+                    .attr("stroke", "#800080")
+                    .attr("stroke-width", 2)
+                    .render(true),
+            );
+            svg.push('\n');
+
+            // Bottom notch
+            svg.push_str(
+                &SvgTag::new("line")
+                    .attr("x1", x)
+                    .attr("y1", total_header_height + histogram_height - notch_height)
+                    .attr("x2", x)
+                    .attr("y2", total_header_height + histogram_height)
+                    .attr("stroke", "#800080")
+                    .attr("stroke-width", 2)
+                    .render(true),
+            );
+            svg.push('\n');
+        }
+
+        // Plot histogram bars - adjusted for total_header_height
         for x in (self.min_cutoff..self.max_cutoff).step_by(self.stride_len as usize) {
             let idx = ((x - self.min_cutoff) / self.stride_len) as usize;
             let x_pos = idx;
 
-            // Plot callable depth
             if callable_depths[idx] > 0 {
-                let height = (callable_depths[idx] as f32 / 100.0 * svg_height as f32) as u32;
+                let height = (callable_depths[idx] as f32 / 100.0 * histogram_height as f32) as u32;
                 svg.push_str(
                     &SvgTag::new("rect")
                         .attr("x", x_pos)
-                        .attr("y", svg_height - height)
+                        .attr("y", total_header_height + histogram_height - height)
                         .attr("width", 1)
                         .attr("height", height)
                         .attr("fill", "#007700")
@@ -175,12 +227,11 @@ impl HistogramPlotter {
                 svg.push('\n');
             }
 
-            // Plot low quality depth
             if low_qual_depths[idx] > 0 {
-                let height = (low_qual_depths[idx] as f32 / 100.0 * svg_height as f32) as u32;
-                let y_pos = svg_height
+                let height = (low_qual_depths[idx] as f32 / 100.0 * histogram_height as f32) as u32;
+                let y_pos = total_header_height + histogram_height
                     - height
-                    - (callable_depths[idx] as f32 / 100.0 * svg_height as f32) as u32;
+                    - (callable_depths[idx] as f32 / 100.0 * histogram_height as f32) as u32;
                 svg.push_str(
                     &SvgTag::new("rect")
                         .attr("x", x_pos)
@@ -194,61 +245,13 @@ impl HistogramPlotter {
             }
         }
 
-        // Add bar crawls (grid lines) with labels
-        let bar_stride = svg_width / (self.max_cutoff / 5_000_000);
-        for x in (0..svg_width).step_by(bar_stride as usize) {
-            // Add position label first with background
-            let pos = (x * self.stride_len + self.min_cutoff) / 1_000_000;
+        // Legend position adjusted
+        let legend_y = total_header_height + histogram_height + 10;
 
-            // Add a white background rectangle for the text
-            svg.push_str(
-                &SvgTag::new("rect")
-                    .attr("x", x - bar_stride / 2)
-                    .attr("y", 0)
-                    .attr("width", bar_stride)
-                    .attr("height", 25)
-                    .attr("fill", format!("#{:06x}", self.canvas_background))
-                    .render(true),
-            );
-            svg.push('\n');
+        let legend_total_width = 300;
+        let legend_start_x = (svg_width - legend_total_width) / 2;
 
-            // Add the position label with larger font
-            svg.push_str(
-                &SvgTag::new("text")
-                    .attr("x", x)
-                    .attr("y", 18)
-                    .attr("text-anchor", "middle")
-                    .attr("font-family", "Arial")
-                    .attr("font-size", "16")
-                    .attr("font-weight", "bold")
-                    .attr("fill", "#800080")
-                    .render(false),
-            );
-            svg.push_str(&format!("{}Mb", pos));
-            svg.push_str("</text>\n");
-
-            // Start bar crawls below the labels
-            for bar in (2..21).step_by(2) {
-                let bar_height = svg_height / 20;
-                let y = bar * bar_height;
-                for dx in -4..=4 {
-                    svg.push_str(
-                        &SvgTag::new("line")
-                            .attr("x1", x as i32 + dx)
-                            .attr("y1", y)
-                            .attr("x2", x as i32 + dx)
-                            .attr("y2", y + 25)
-                            .attr("stroke", "#800080")
-                            .attr("stroke-width", 1)
-                            .attr("stroke-opacity", "0.5")
-                            .render(true),
-                    );
-                    svg.push('\n');
-                }
-            }
-        }
-
-        // Add gradients definitions
+        // Add gradients definitions before the legend
         svg.push_str("<defs>\n");
         svg.push_str(
             &SvgTag::new("linearGradient")
@@ -279,12 +282,10 @@ impl HistogramPlotter {
         svg.push_str("</linearGradient>\n");
         svg.push_str("</defs>\n");
 
-        // Add legend
-        let legend_y = svg_height - 40;
         // Callable coverage legend
         svg.push_str(
             &SvgTag::new("rect")
-                .attr("x", 10)
+                .attr("x", legend_start_x)
                 .attr("y", legend_y)
                 .attr("width", 20)
                 .attr("height", 10)
@@ -293,7 +294,7 @@ impl HistogramPlotter {
         );
         svg.push_str(
             &SvgTag::new("text")
-                .attr("x", 35)
+                .attr("x", legend_start_x + 25)
                 .attr("y", legend_y + 8)
                 .attr("font-family", "Arial")
                 .attr("font-size", "12")
@@ -306,7 +307,7 @@ impl HistogramPlotter {
         // Low quality coverage legend
         svg.push_str(
             &SvgTag::new("rect")
-                .attr("x", 150)
+                .attr("x", legend_start_x + 150)
                 .attr("y", legend_y)
                 .attr("width", 20)
                 .attr("height", 10)
@@ -315,7 +316,7 @@ impl HistogramPlotter {
         );
         svg.push_str(
             &SvgTag::new("text")
-                .attr("x", 175)
+                .attr("x", legend_start_x + 175)
                 .attr("y", legend_y + 8)
                 .attr("font-family", "Arial")
                 .attr("font-size", "12")
@@ -326,7 +327,6 @@ impl HistogramPlotter {
         svg.push_str("</text>\n");
 
         // Close the group tag
-        svg.push_str("</g>\n");
         svg.push_str("</svg>\n");
         svg
     }
@@ -339,7 +339,7 @@ pub(crate) fn generate_histogram(
     contig_length: u32,
     largest_contig_length: u32,
 ) -> std::io::Result<PathBuf> {
-    const MAX_WIDTH: u32 = 1000; // Maximum width for the largest contig
+    const MAX_WIDTH: u32 = 2000; // Maximum width for the largest contig
     const MIN_WIDTH: u32 = 200; // Minimum width for chrM
     const CHRM_LENGTH: u32 = 16569; // Human mitochondrial genome length
 
@@ -357,7 +357,7 @@ pub(crate) fn generate_histogram(
         0,             // min_cutoff
         contig_length, // max_cutoff uses actual contig length
         stride_len,    // adjusted stride
-        400,           // bar_height
+        100,           // bar_height
         0xFFFFFF,      // canvas_background (white)
     );
 
