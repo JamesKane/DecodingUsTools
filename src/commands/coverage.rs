@@ -42,17 +42,6 @@ impl CallableOptions {
     }
 }
 
-
-#[derive(Default)]
-struct CallableStats {
-    ref_n: usize,
-    no_coverage: usize,
-    low_coverage: usize,
-    excessive_coverage: usize,
-    poor_mapping_quality: usize,
-    callable: usize,
-}
-
 struct ContigStats {
     name: String,
     length: usize,
@@ -63,11 +52,8 @@ struct ContigStats {
     quality_bases: u64,
     n_reads: u32,
     n_selected_reads: u32,
-    stats: CallableStats,
     progress_bar: ProgressBar,
     options: CallableOptions,
-    current_position: u32,
-    coverage_ranges: Vec<CoverageRange>,
 }
 
 impl ContigStats {
@@ -94,11 +80,8 @@ impl ContigStats {
             quality_bases: 0,
             n_reads: 0,
             n_selected_reads: 0,
-            stats: CallableStats::default(),
             progress_bar,
             options,
-            current_position: 0,
-            coverage_ranges: Vec::new(),
         }
     }
 
@@ -106,15 +89,8 @@ impl ContigStats {
         &mut self,
         raw_depth: u32,
         alignments: bam::pileup::Alignments,
-        ref_base: u8,
     ) {
-        if ref_base == b'N' || ref_base == b'n' {
-            self.stats.ref_n += 1;
-            return;
-        }
-
         let mut qc_depth = 0;
-        let mut low_mapq_count = 0;
 
         for aln in alignments {
             let record = aln.record();
@@ -122,10 +98,6 @@ impl ContigStats {
 
             // Count total reads
             self.n_reads += 1;
-
-            if mapq <= self.options.max_low_mapq {
-                low_mapq_count += 1;
-            }
 
             // Check quality criteria
             if mapq >= self.options.min_mapping_quality {
@@ -147,54 +119,6 @@ impl ContigStats {
             self.n_covered_bases += 1;
             self.summed_coverage += raw_depth as u64;
         }
-
-        // Determine state
-        if raw_depth == 0 {
-            self.stats.no_coverage += 1;
-        } else if raw_depth >= self.options.min_depth_for_low_mapq
-            && (low_mapq_count as f64 / raw_depth as f64) > self.options.max_low_mapq_fraction
-        {
-            self.stats.poor_mapping_quality += 1;
-        } else if qc_depth < self.options.min_depth {
-            self.stats.low_coverage += 1;
-        } else if self.options.max_depth > 0 && qc_depth > self.options.max_depth {
-            self.stats.excessive_coverage += 1;
-        } else {
-            self.stats.callable += 1;
-        }
-    }
-
-    fn format_report_line(&self) -> String {
-        let total_bases = (self.length - self.stats.ref_n) as f64;
-        let avg_depth = self.summed_coverage as f64 / total_bases;
-        let avg_mapq = if self.n_selected_reads > 0 {
-            self.summed_mapq as f64 / self.n_selected_reads as f64
-        } else {
-            0.0
-        };
-        let avg_baseq = if self.quality_bases > 0 {
-            self.summed_baseq as f64 / self.quality_bases as f64
-        } else {
-            0.0
-        };
-        let coverage_percent = (self.n_covered_bases as f64 / total_bases) * 100.0;
-
-        format!(
-            "{}|1|{}|{}|{}|{}|{}|{}|{}|{}|{:.2}|{:.2}|{:.1}|{:.1}",
-            self.name,
-            self.length,
-            self.n_selected_reads,
-            self.stats.ref_n,
-            self.stats.no_coverage,
-            self.stats.low_coverage,
-            self.stats.excessive_coverage,
-            self.stats.poor_mapping_quality,
-            self.stats.callable,
-            coverage_percent,
-            avg_depth,
-            avg_mapq,
-            avg_baseq
-        )
     }
 }
 
@@ -237,10 +161,12 @@ pub struct CallableLociCounter {
     coverage_ranges: Vec<CoverageRange>,
     current_pos: u32,
     output_dir: PathBuf,
+    largest_contig_length: u32,
+    contig_counts: HashMap<String, [u64; 6]>,
 }
 
 impl CallableLociCounter {
-    pub fn new(bed_file: &str, summary_file: &str) -> IoResult<Self> {
+    pub fn new(bed_file: &str, summary_file: &str, largest_contig_length: u32) -> IoResult<Self> {
         let output_dir = PathBuf::from(bed_file)
             .parent()
             .unwrap_or(&PathBuf::from("."))
@@ -253,6 +179,8 @@ impl CallableLociCounter {
             coverage_ranges: Vec::new(),
             current_pos: 0,
             output_dir,
+            largest_contig_length,
+            contig_counts: Default::default(),
         })
     }
 
@@ -267,7 +195,7 @@ impl CallableLociCounter {
         Ok(())
     }
 
-    fn finish_contig(&mut self, contig_name: &str) -> IoResult<()> {
+    fn finish_contig(&mut self, contig_name: &str, contig_length: u32) -> IoResult<()> {
         self.write_state()?;
 
         if !self.coverage_ranges.is_empty() {
@@ -275,6 +203,8 @@ impl CallableLociCounter {
                 std::mem::take(&mut self.coverage_ranges),
                 &format!("{}_coverage", contig_name),
                 contig_name,
+                contig_length,
+                if contig_name == "chrM" { contig_length } else { self.largest_contig_length },
             )?;
 
             let final_path = self
@@ -295,7 +225,12 @@ impl CallableLociCounter {
         state: CalledState,
     ) -> IoResult<()> {
         self.counts[state as usize] += 1;
-        
+        // Update per-contig counts
+        self.contig_counts
+            .entry(contig.to_string())
+            .or_insert([0; 6])[state as usize] += 1;
+
+
         match self.coverage_ranges.last_mut() {
             Some(range) if range.can_merge(pos, depth, is_low_mapq) => {
                 range.extend(pos);
@@ -323,6 +258,9 @@ impl CallableLociCounter {
         Ok(())
     }
 
+    pub fn get_contig_counts(&self, contig: &str) -> [u64; 6] {
+        self.contig_counts.get(contig).copied().unwrap_or([0; 6])
+    }
 }
 
 // Add a helper function for natural sorting of chromosome names
@@ -432,7 +370,6 @@ pub fn run(
     let mut bam = bam::IndexedReader::from_path(&bam_file)?;
     let header = bam.header().clone();
     let mut fasta = IndexedReader::from_file(&reference_file)?;
-    let mut counter = CallableLociCounter::new(&output_bed, &output_summary)?;
 
     // Create progress bars
     let multi_progress = MultiProgress::new();
@@ -462,6 +399,15 @@ pub fn run(
         );
     }
 
+    // Find largest non-chrM contig length
+    let largest_contig_length = contig_stats.values()
+        .filter(|stats| stats.name != "chrM")
+        .map(|stats| stats.length)
+        .max()
+        .unwrap_or(0) as u32;
+
+    let mut counter = CallableLociCounter::new(&output_bed, &output_summary, largest_contig_length)?;
+
     let mut pileup = bam.pileup();
     pileup.set_max_depth(if options.max_depth > 0 {
         options.max_depth
@@ -479,7 +425,12 @@ pub fn run(
         
         // Detect contig transition
         if current_contig != contig && !current_contig.is_empty() {
-            counter.finish_contig(&current_contig)?;
+            // Use the length from contig_stats for the current contig
+            let length = contig_stats.values()
+                .find(|stats| stats.name == current_contig)
+                .map(|stats| stats.length)
+                .unwrap_or(0) as u32;
+            counter.finish_contig(&current_contig, length)?;
         }
         current_contig = contig.to_string();
 
@@ -549,7 +500,7 @@ pub fn run(
 
         // Update contig stats
         if let Some(stats) = contig_stats.get_mut(&tid) {
-            stats.process_position(raw_depth, pileup.alignments(), ref_base);
+            stats.process_position(raw_depth, pileup.alignments());
         }
     }
 
@@ -560,7 +511,11 @@ pub fn run(
     main_progress.finish_with_message("Coverage analysis complete!");
 
     // Finish final contig
-    counter.finish_contig(&*current_contig)?;
+    let final_length = contig_stats.values()
+        .find(|stats| stats.name == current_contig)
+        .map(|stats| stats.length)
+        .unwrap_or(0) as u32;
+    counter.finish_contig(&current_contig, final_length)?;
 
     let mut summary_writer = BufWriter::new(File::create(output_summary)?);
 
@@ -574,7 +529,32 @@ pub fn run(
     let mut sorted_stats: Vec<_> = contig_stats.iter().collect();
     sorted_stats.sort_by(|a, b| natural_cmp(&a.1.name, &b.1.name));
     for (_, stats) in sorted_stats {
-        writeln!(summary_writer, "{}", stats.format_report_line())?;
+        let counts = counter.get_contig_counts(&stats.name);
+        writeln!(
+            summary_writer,
+            "{}|1|{}|{}|{}|{}|{}|{}|{}|{}|{:.2}|{:.2}|{:.1}|{:.1}",
+            stats.name,
+            stats.length,
+            stats.n_selected_reads,
+            counts[CalledState::REF_N as usize],
+            counts[CalledState::NO_COVERAGE as usize],
+            counts[CalledState::LOW_COVERAGE as usize],
+            counts[CalledState::EXCESSIVE_COVERAGE as usize],
+            counts[CalledState::POOR_MAPPING_QUALITY as usize],
+            counts[CalledState::CALLABLE as usize],
+            (stats.n_covered_bases as f64 / stats.length as f64) * 100.0,
+            stats.summed_coverage as f64 / stats.length as f64,
+            if stats.n_selected_reads > 0 {
+                stats.summed_mapq as f64 / stats.n_selected_reads as f64
+            } else {
+                0.0
+            },
+            if stats.quality_bases > 0 {
+                stats.summed_baseq as f64 / stats.quality_bases as f64
+            } else {
+                0.0
+            }
+        )?;
     }
 
     Ok(())

@@ -310,13 +310,29 @@ pub(crate) fn generate_histogram(
     ranges: Vec<CoverageRange>,
     file_name_prefix: &str,
     contig_name: &str,
+    contig_length: u32,
+    largest_contig_length: u32,
 ) -> std::io::Result<PathBuf> {
+    const MAX_WIDTH: u32 = 1000; // Maximum width for the largest contig
+    const MIN_WIDTH: u32 = 200;  // Minimum width for chrM
+    const CHRM_LENGTH: u32 = 16569; // Human mitochondrial genome length
+
+    // Special handling for chrM
+    let stride_len = if contig_name == "chrM" {
+        // Use a smaller stride for chrM to ensure visibility
+        // This will make it MIN_WIDTH pixels wide
+        (CHRM_LENGTH + MIN_WIDTH - 1) / MIN_WIDTH
+    } else {
+        // Normal stride calculation for other chromosomes
+        (largest_contig_length + MAX_WIDTH - 1) / MAX_WIDTH
+    };
+
     let plotter = HistogramPlotter::new(
-        0,      // min_cutoff
-        60_000_000, // max_cutoff
-        1000,   // stride_len
-        400,    // bar_height
-        0xFFFFFF // canvas_background (white)
+        0,              // min_cutoff
+        contig_length,  // max_cutoff uses actual contig length
+        stride_len,     // adjusted stride
+        400,           // bar_height
+        0xFFFFFF       // canvas_background (white)
     );
 
     let (callable_depths, low_qual_depths) = plotter.process_coverage_ranges(&ranges);
