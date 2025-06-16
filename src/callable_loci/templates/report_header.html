@@ -25,7 +25,92 @@
             border-radius: 0.5rem;
             margin-bottom: 2rem;
         }
-        /* ... rest of the CSS ... */
+        .sample-note {
+            color: #666;
+            font-style: italic;
+            font-size: 0.9em;
+        }
+        .tabs {
+            margin-top: 1.25rem;
+        }
+        .tab-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-bottom: 1.25rem;
+            list-style: none;
+            padding: 0;
+        }
+        .tab-button {
+            padding: 0.625rem 1.25rem;
+            border: none;
+            background: var(--bg-light);
+            cursor: pointer;
+            border-radius: 0.25rem;
+            font-size: 1rem;
+        }
+        .tab-button:hover {
+            background: #e0e0e0;
+        }
+        .tab-button[aria-selected="true"] {
+            background: var(--primary-color);
+            color: white;
+        }
+        .tab-panel {
+            display: none;
+            padding: 1.25rem;
+            border: 1px solid var(--border-color);
+            border-radius: 0.5rem;
+        }
+        .tab-panel[aria-hidden="false"] {
+            display: block;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-bottom: 1.25rem;
+        }
+        th, td {
+            border: 1px solid var(--border-color);
+            padding: 0.5rem;
+            text-align: left;
+        }
+        th { background-color: var(--bg-light); }
+        .coverage-plot {
+            width: 100%;
+            margin-top: 1.25rem;
+        }
+        .coverage-plot img {
+            width: 100%;
+            height: auto;
+            display: block;
+            max-width: 100%;
+            object-fit: contain;
+        }
+        figure {
+            margin: 0;
+        }
+        figcaption {
+            text-align: center;
+            margin-top: 0.5rem;
+            color: #666;
+        }
+        .contig-selector {
+            margin: 1em 0;
+        }
+        .contig-selector select {
+            width: 300px;
+            padding: 8px;
+            border: 1px solid var(--border-color);
+            border-radius: 0.5rem;
+            font-size: 1rem;
+            background: var(--bg-light);
+        }
+        .contig-selector select:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.2);
+        }
     </style>
 </head>
 <body>
