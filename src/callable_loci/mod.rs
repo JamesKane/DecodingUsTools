@@ -23,7 +23,6 @@ pub fn run(
     mut options: CallableOptions,
     contigs: Option<Vec<String>>,
 ) -> Result<(), Box<dyn Error>> {
-    println!("Requested contigs: {:?}", contigs);
     options = options.with_contigs(contigs);
 
     let mut bam = bam::IndexedReader::from_path(&bam_file)?;
