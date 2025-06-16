@@ -7,6 +7,7 @@ pub struct CallableOptions {
     pub min_depth_for_low_mapq: u32,
     pub max_low_mapq: u8,
     pub max_low_mapq_fraction: f64,
+    pub selected_contigs: Option<Vec<String>>,
 }
 
 impl CallableOptions {
@@ -27,6 +28,12 @@ impl CallableOptions {
             min_depth_for_low_mapq,
             max_low_mapq,
             max_low_mapq_fraction,
+            selected_contigs: None,
         }
+    }
+
+    pub fn with_contigs(mut self, contigs: Option<Vec<String>>) -> Self {
+        self.selected_contigs = contigs;
+        self
     }
 }

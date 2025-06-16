@@ -35,6 +35,10 @@ pub enum Commands {
         #[arg(short = 's', long = "summary", default_value = "table.txt")]
         summary_file: String,
 
+        /// Limit analysis to specific contigs (can be specified multiple times)
+        #[arg(short = 'L', long = "contig", action = clap::ArgAction::Append)]
+        contigs: Option<Vec<String>>,
+        
         /// Minimum depth for callable regions
         #[arg(long, default_value = "4")]
         min_depth: u32,

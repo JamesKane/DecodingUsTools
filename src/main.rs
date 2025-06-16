@@ -22,6 +22,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             reference_file,
             output_file,
             summary_file,
+            contigs,
             min_depth,
             max_depth,
             min_mapping_quality,
@@ -39,7 +40,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 max_low_mapq,
                 max_low_mapq_fraction,
             );
-            callable_loci::run(bam_file, reference_file, output_file, summary_file, options)?;
+            callable_loci::run(bam_file, reference_file, output_file, summary_file, options, contigs)?;
         }
         cli::Commands::FindYBranch {
             bam_file,

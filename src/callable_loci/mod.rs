@@ -20,13 +20,17 @@ pub fn run(
     reference_file: String,
     output_bed: String,
     output_summary: String,
-    options: CallableOptions,
+    mut options: CallableOptions,
+    contigs: Option<Vec<String>>,
 ) -> Result<(), Box<dyn Error>> {
+    println!("Requested contigs: {:?}", contigs);
+    options = options.with_contigs(contigs);
+
     let mut bam = bam::IndexedReader::from_path(&bam_file)?;
     let header = bam.header().clone();
     let mut fasta = IndexedReader::from_file(&reference_file)?;
 
-    // Create progress bars
+    // Setup progress tracking
     let multi_progress = MultiProgress::new();
     let main_progress = multi_progress.add(ProgressBar::new_spinner());
     main_progress.set_style(
@@ -36,12 +40,21 @@ pub fn run(
     );
     main_progress.set_message("Analyzing coverage...");
 
-    // Create contig progress bars map using usize as key
+    // Initialize contig tracking
     let mut contig_stats = HashMap::new();
+    let selected_contigs: Option<std::collections::HashSet<String>> = options
+        .selected_contigs
+        .as_ref()
+        .map(|contigs| contigs.iter().cloned().collect());
 
-    // First pass to get contig lengths and set up progress bars
-    for tid in 0..header.target_names().len().min(25) {
+    // Initialize stats for each contig we'll process
+    for tid in 0..header.target_names().len() {
         let contig_name = std::str::from_utf8(header.tid2name(tid as u32))?;
+        if let Some(ref selected) = selected_contigs {
+            if !selected.contains(contig_name) {
+                continue;
+            }
+        }
         let length = header.target_len(tid as u32).unwrap_or(0) as usize;
         contig_stats.insert(
             tid,
@@ -54,92 +67,110 @@ pub fn run(
         );
     }
 
-    // Find largest non-chrM contig length
+    // Validate contig selection
+    if let Some(ref selected) = selected_contigs {
+        if contig_stats.is_empty() {
+            return Err(format!(
+                "None of the specified contigs ({}) were found in the BAM file",
+                selected
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+            .into());
+        }
+    }
+
+    // Initialize counter
     let largest_contig_length = contig_stats
         .values()
         .filter(|stats| stats.name != "chrM")
         .map(|stats| stats.length)
         .max()
         .unwrap_or(0) as u32;
-
     let mut counter = CallableProfiler::new(&output_bed, largest_contig_length)?;
 
-    let mut pileup = bam.pileup();
-    pileup.set_max_depth(if options.max_depth > 0 {
-        options.max_depth
-    } else {
-        500
-    });
+    // Process each selected contig
+    let mut contig_tids: Vec<_> = contig_stats.keys().cloned().collect();
+    contig_tids.sort();
+    for &tid in contig_tids.iter() {
+        let contig_name = contig_stats[&tid].name.clone();
+        main_progress.set_message(format!("Processing {}...", contig_name));
 
-    let mut current_contig = String::new();
-    // Process pileup
-    for p in pileup {
-        let pileup = p?;
-        let tid = pileup.tid() as usize; // Convert tid to usize here
-        let pos = pileup.pos();
-        let contig = std::str::from_utf8(header.tid2name(pileup.tid()))?;
+        // Seek to contig and set up pileup
+        bam.fetch((tid as u32, 0, header.target_len(tid as u32).unwrap_or(0)))?;
+        let mut pileup = bam.pileup();
+        pileup.set_max_depth(if options.max_depth > 0 {
+            options.max_depth
+        } else {
+            500
+        });
 
-        // Detect contig transition
-        if current_contig != contig && !current_contig.is_empty() {
-            // Use the length from contig_stats for the current contig
-            let length = contig_stats
-                .values()
-                .find(|stats| stats.name == current_contig)
-                .map(|stats| stats.length)
-                .unwrap_or(0) as u32;
-            counter.finish_contig(&current_contig, length)?;
-        }
-        current_contig = contig.to_string();
-
-        // Update progress for current contig
-        if let Some(stats) = contig_stats.get_mut(&tid) {
-            stats.progress_bar.set_position(pos as u64);
-        }
-
-        // Get reference base
-        let mut seq = Vec::new();
-        fasta.fetch(contig, pos as u64, (pos + 1) as u64)?;
-        fasta.read(&mut seq)?;
-        let ref_base = seq.first().map(|&b| b).unwrap_or(b'N');
-
-        let mut raw_depth = 0;
-        let mut qc_depth = 0;
-        let mut low_mapq_count = 0;
-
-        // Process alignments
-        for align in pileup.alignments() {
-            raw_depth += 1;
-            let record = align.record();
-
-            if record.mapq() <= options.max_low_mapq {
-                low_mapq_count += 1;
+        // Process pileup for this contig
+        for p in pileup {
+            let pileup = p?;
+            if pileup.tid() as usize != tid {
+                break; // Move to next contig
             }
 
-            if record.mapq() >= options.min_mapping_quality {
-                if let Some(qpos) = align.qpos() {
-                    if let Some(&qual) = record.qual().get(qpos) {
-                        if qual >= options.min_base_quality || align.is_del() {
-                            qc_depth += 1;
+            let pos = pileup.pos();
+            let contig = std::str::from_utf8(header.tid2name(pileup.tid()))?;
+
+            // Update progress for current contig
+            if let Some(stats) = contig_stats.get_mut(&tid) {
+                stats.progress_bar.set_position(pos as u64);
+            }
+
+            // Get reference base
+            let mut seq = Vec::new();
+            fasta.fetch(contig, pos as u64, (pos + 1) as u64)?;
+            fasta.read(&mut seq)?;
+            let ref_base = seq.first().map(|&b| b).unwrap_or(b'N');
+
+            let mut raw_depth = 0;
+            let mut qc_depth = 0;
+            let mut low_mapq_count = 0;
+
+            // Process alignments
+            for align in pileup.alignments() {
+                raw_depth += 1;
+                let record = align.record();
+
+                if record.mapq() <= options.max_low_mapq {
+                    low_mapq_count += 1;
+                }
+
+                if record.mapq() >= options.min_mapping_quality {
+                    if let Some(qpos) = align.qpos() {
+                        if let Some(&qual) = record.qual().get(qpos) {
+                            if qual >= options.min_base_quality || align.is_del() {
+                                qc_depth += 1;
+                            }
                         }
                     }
                 }
             }
+
+            counter.process_position(
+                contig,
+                pos,
+                ref_base,
+                raw_depth,
+                qc_depth,
+                low_mapq_count,
+                &options,
+            )?;
+
+            // Update contig stats
+            if let Some(stats) = contig_stats.get_mut(&tid) {
+                stats.process_position(raw_depth, pileup.alignments());
+            }
         }
 
-        counter.process_position(
-            contig,
-            pos,
-            ref_base,
-            raw_depth,
-            qc_depth,
-            low_mapq_count,
-            &options,
-        )?;
-
-        // Update contig stats
-        if let Some(stats) = contig_stats.get_mut(&tid) {
-            stats.process_position(raw_depth, pileup.alignments());
-        }
+        // Finish this contig
+        let stats = &contig_stats[&tid];
+        counter.finish_contig(&stats.name, stats.length as u32)?;
     }
 
     // Finish all progress bars
@@ -148,14 +179,7 @@ pub fn run(
     }
     main_progress.finish_with_message("Coverage analysis complete!");
 
-    // Finish final contig
-    let final_length = contig_stats
-        .values()
-        .find(|stats| stats.name == current_contig)
-        .map(|stats| stats.length)
-        .unwrap_or(0) as u32;
-    counter.finish_contig(&current_contig, final_length)?;
-
+    // Write summary
     use std::io::Write;
     let mut summary_writer = BufWriter::new(File::create(output_summary)?);
 
