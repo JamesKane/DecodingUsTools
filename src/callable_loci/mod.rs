@@ -13,7 +13,7 @@ use rust_htslib::bam::Read;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufWriter, Write};
 
 pub fn run(
     bam_file: String,
@@ -35,7 +35,15 @@ pub fn run(
     validate_contig_selection(&contig_stats, &options)?;
 
     let mut counter = initialize_counter(&contig_stats, &output_bed)?;
-    process_contigs(&mut bam, &mut fasta, &header, &mut counter, &mut contig_stats, &options, &main_progress)?;
+    process_contigs(
+        &mut bam,
+        &mut fasta,
+        &header,
+        &mut counter,
+        &mut contig_stats,
+        &options,
+        &main_progress,
+    )?;
     finish_progress_bars(&contig_stats, &main_progress);
 
     write_summary(&contig_stats, &counter, &output_summary)?;
@@ -75,7 +83,12 @@ fn initialize_contig_stats(
         let length = header.target_len(tid as u32).unwrap_or(0) as usize;
         contig_stats.insert(
             tid,
-            ContigProfiler::new(contig_name.to_string(), length, multi_progress, options.clone()),
+            ContigProfiler::new(
+                contig_name.to_string(),
+                length,
+                multi_progress,
+                options.clone(),
+            ),
         );
     }
     Ok(contig_stats)
@@ -89,8 +102,13 @@ fn validate_contig_selection(
         if contig_stats.is_empty() {
             return Err(format!(
                 "None of the specified contigs ({}) were found in the BAM file",
-                selected.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
-            ).into());
+                selected
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+            .into());
         }
     }
     Ok(())
@@ -109,10 +127,7 @@ fn initialize_counter(
     CallableProfiler::new(output_bed, largest_contig_length)
 }
 
-fn process_position(
-    pileup: &bam::pileup::Pileup,
-    options: &CallableOptions,
-) -> (u32, u32, u32) {
+fn process_position(pileup: &bam::pileup::Pileup, options: &CallableOptions) -> (u32, u32, u32) {
     let mut raw_depth = 0;
     let mut qc_depth = 0;
     let mut low_mapq_count = 0;
@@ -171,7 +186,11 @@ fn process_single_contig(
 ) -> Result<(), Box<dyn Error>> {
     bam.fetch((tid as u32, 0, header.target_len(tid as u32).unwrap_or(0)))?;
     let mut pileup = bam.pileup();
-    pileup.set_max_depth(if options.max_depth > 0 { options.max_depth } else { 500 });
+    pileup.set_max_depth(if options.max_depth > 0 {
+        options.max_depth
+    } else {
+        500
+    });
 
     for p in pileup {
         let pileup = p?;
