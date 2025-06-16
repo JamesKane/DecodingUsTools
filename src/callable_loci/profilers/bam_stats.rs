@@ -8,7 +8,7 @@ pub struct BamStats {
     paired_reads: usize,
     total_insert_size: i64,
     paired_count: usize,
-    max_samples: usize,
+    pub(crate) max_samples: usize,
     length_distribution: HashMap<usize, usize>,
     insert_size_distribution: HashMap<i64, usize>,
 }

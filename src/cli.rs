@@ -32,7 +32,7 @@ pub enum Commands {
         output_file: String,
 
         /// Output file for the callable regions
-        #[arg(short = 's', long = "summary", default_value = "table.txt")]
+        #[arg(short = 's', long = "summary", default_value = "table.html")]
         summary_file: String,
 
         /// Limit analysis to specific contigs (can be specified multiple times)

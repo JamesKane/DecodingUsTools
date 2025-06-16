@@ -7,7 +7,9 @@ use crate::callable_loci::types::CalledState;
 use bio::io::fasta::IndexedReader;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 pub use options::CallableOptions;
-use profilers::{callable_profiler::CallableProfiler, contig_profiler::ContigProfiler, bam_stats::BamStats};
+use profilers::{
+    bam_stats::BamStats, callable_profiler::CallableProfiler, contig_profiler::ContigProfiler,
+};
 use rust_htslib::bam;
 use rust_htslib::bam::Read;
 use std::collections::HashMap;
@@ -63,7 +65,7 @@ pub fn run(
     )?;
     finish_progress_bars(&contig_stats, &main_progress);
 
-    write_summary(&contig_stats, &counter, &output_summary)?;
+    write_summary(&contig_stats, &counter, &output_summary, &bam_stats)?;
     Ok(())
 }
 
@@ -201,13 +203,17 @@ fn process_single_contig(
     options: &CallableOptions,
     tid: usize,
 ) -> Result<(), Box<dyn Error>> {
-    bam.fetch((tid as u32, 0, header.target_len(tid as u32).unwrap_or(0)))?;
+    let contig_len = header.target_len(tid as u32).unwrap_or(0);
+    bam.fetch((tid as u32, 0, contig_len))?;
     let mut pileup = bam.pileup();
     pileup.set_max_depth(if options.max_depth > 0 {
         options.max_depth
     } else {
         500
     });
+
+    let contig = std::str::from_utf8(header.tid2name(tid as u32))?;
+    let mut current_pos = 0;
 
     for p in pileup {
         let pileup = p?;
@@ -216,8 +222,32 @@ fn process_single_contig(
         }
 
         let pos = pileup.pos();
-        let contig = std::str::from_utf8(header.tid2name(pileup.tid()))?;
 
+        // Process any gaps (NO_COVERAGE positions) before this pileup position
+        while current_pos < pos {
+            if let Some(stats) = contig_stats.get_mut(&tid) {
+                stats.progress_bar.set_position(current_pos as u64);
+            }
+
+            let mut seq = Vec::new();
+            fasta.fetch(contig, current_pos as u64, (current_pos + 1) as u64)?;
+            fasta.read(&mut seq)?;
+            let ref_base = seq.first().map(|&b| b).unwrap_or(b'N');
+
+            counter.process_position(
+                contig,
+                current_pos,
+                ref_base,
+                0,  // raw_depth
+                0,  // qc_depth
+                0,  // low_mapq_count
+                options,
+            )?;
+
+            current_pos += 1;
+        }
+
+        // Process the current pileup position
         if let Some(stats) = contig_stats.get_mut(&tid) {
             stats.progress_bar.set_position(pos as u64);
         }
@@ -242,6 +272,32 @@ fn process_single_contig(
         if let Some(stats) = contig_stats.get_mut(&tid) {
             stats.process_position(raw_depth, pileup.alignments());
         }
+
+        current_pos = pos + 1;
+    }
+
+    // Process any remaining positions after the last pileup
+    while current_pos < contig_len as u32 {
+        if let Some(stats) = contig_stats.get_mut(&tid) {
+            stats.progress_bar.set_position(current_pos as u64);
+        }
+
+        let mut seq = Vec::new();
+        fasta.fetch(contig, current_pos as u64, (current_pos + 1) as u64)?;
+        fasta.read(&mut seq)?;
+        let ref_base = seq.first().map(|&b| b).unwrap_or(b'N');
+
+        counter.process_position(
+            contig,
+            current_pos,
+            ref_base,
+            0,  // raw_depth
+            0,  // qc_depth
+            0,  // low_mapq_count
+            options,
+        )?;
+
+        current_pos += 1;
     }
 
     let stats = &contig_stats[&tid];
@@ -259,59 +315,251 @@ fn finish_progress_bars(
     main_progress.finish_with_message("Coverage analysis complete!");
 }
 
+use std::path::Path;
 fn write_summary(
     contig_stats: &HashMap<usize, ContigProfiler>,
     counter: &CallableProfiler,
     output_summary: &str,
+    bam_stats: &BamStats,
 ) -> Result<(), Box<dyn Error>> {
-    let mut summary_writer = BufWriter::new(File::create(output_summary)?);
+    let mut html = String::new();
 
-    writeln!(
-        summary_writer,
-        "Contig|Start|Stop|UniqueReads|RefN|NoCoverage|LowCoverage|ExcessiveCoverage|PoorMappingQuality|Callable|CoveragePercent|AvgDepth|AvgMapQ|AvgBaseQ"
-    )?;
+    html.push_str(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BAM Analysis Report</title>
+    <style>
+        :root {
+            --primary-color: #007bff;
+            --border-color: #ddd;
+            --bg-light: #f5f5f5;
+        }
+        body { 
+            font-family: system-ui, -apple-system, sans-serif;
+            margin: 0;
+            padding: 2rem;
+        }
+        main {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .stats-box { 
+            background: var(--bg-light);
+            padding: 1.25rem;
+            border-radius: 0.5rem;
+            margin-bottom: 2rem;
+        }
+        .sample-note {
+            color: #666;
+            font-style: italic;
+            font-size: 0.9em;
+        }
+        .tabs {
+            margin-top: 1.25rem;
+        }
+        .tab-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-bottom: 1.25rem;
+            list-style: none;
+            padding: 0;
+        }
+        .tab-button {
+            padding: 0.625rem 1.25rem;
+            border: none;
+            background: var(--bg-light);
+            cursor: pointer;
+            border-radius: 0.25rem;
+            font-size: 1rem;
+        }
+        .tab-button:hover {
+            background: #e0e0e0;
+        }
+        .tab-button[aria-selected="true"] {
+            background: var(--primary-color);
+            color: white;
+        }
+        .tab-panel {
+            display: none;
+            padding: 1.25rem;
+            border: 1px solid var(--border-color);
+            border-radius: 0.5rem;
+        }
+        .tab-panel[aria-hidden="false"] {
+            display: block;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-bottom: 1.25rem;
+        }
+        th, td {
+            border: 1px solid var(--border-color);
+            padding: 0.5rem;
+            text-align: left;
+        }
+        th { background-color: var(--bg-light); }
+        .coverage-plot {
+            width: 100%;
+            margin-top: 1.25rem;
+        }
+        .coverage-plot img {
+            width: 100%;
+            height: auto;
+            display: block;
+            max-width: 100%;
+            object-fit: contain;
+        }
+        figure {
+            margin: 0;
+        }
+        figcaption {
+            text-align: center;
+            margin-top: 0.5rem;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+<main>
+    <h1>BAM Analysis Report</h1>
+"#,
+    );
+
+    // Add BAM Statistics section
+    html.push_str(r#"<section class='stats-box'>"#);
+    html.push_str(&format!(
+        r#"<h2>BAM Statistics <span class='sample-note'>(based on first {} reads)</span></h2>"#,
+        bam_stats.max_samples
+    ));
+
+    html.push_str("<dl>");
+    let stats = bam_stats.get_stats();
+    html.push_str(&format!(
+        r#"<dt>Average read length</dt><dd>{:.1} bp</dd>
+        <dt>Paired reads</dt><dd>{:.1}%</dd>
+        <dt>Average insert size</dt><dd>{:.1} bp</dd>"#,
+        stats.get("average_read_length").unwrap_or(&0.0),
+        stats.get("paired_percentage").unwrap_or(&0.0),
+        stats.get("average_insert_size").unwrap_or(&0.0)
+    ));
+    html.push_str("</dl></section>");
+
+    // Add tabbed interface for contigs
+    html.push_str(r#"<section class='tabs' role='tablist'>"#);
+    html.push_str(r#"<ul class='tab-list'>"#);
 
     let mut sorted_stats: Vec<_> = contig_stats.iter().collect();
     sorted_stats.sort_by(|a, b| utils::natural_sort::natural_cmp(&a.1.name, &b.1.name));
 
-    for (_, stats) in sorted_stats {
-        write_contig_summary(&mut summary_writer, stats, counter)?;
+    // Add tab buttons
+    for (i, (_, stats)) in sorted_stats.iter().enumerate() {
+        html.push_str(&format!(
+            r#"<li><button class="tab-button" role="tab" aria-selected="{}" aria-controls="panel-{}" id="tab-{}">{}</button></li>"#,
+            i == 0,
+            i,
+            i,
+            stats.name
+        ));
     }
+    html.push_str("</ul>");
 
-    summary_writer.flush()?;
-    Ok(())
-}
+    // Add tab panels
+    for (i, (_, stats)) in sorted_stats.iter().enumerate() {
+        html.push_str(&format!(
+            r#"<div class="tab-panel" role="tabpanel" id="panel-{}" aria-labelledby="tab-{}" aria-hidden="{}">"#,
+            i,
+            i,
+            i != 0
+        ));
 
-fn write_contig_summary(
-    writer: &mut BufWriter<File>,
-    stats: &ContigProfiler,
-    counter: &CallableProfiler,
-) -> Result<(), Box<dyn Error>> {
-    let counts = counter.get_contig_counts(&stats.name);
-    writeln!(
-        writer,
-        "{}|1|{}|{}|{}|{}|{}|{}|{}|{}|{:.2}|{:.2}|{:.1}|{:.1}",
-        stats.name,
-        stats.length,
-        stats.n_selected_reads,
-        counts[CalledState::REF_N as usize],
-        counts[CalledState::NO_COVERAGE as usize],
-        counts[CalledState::LOW_COVERAGE as usize],
-        counts[CalledState::EXCESSIVE_COVERAGE as usize],
-        counts[CalledState::POOR_MAPPING_QUALITY as usize],
-        counts[CalledState::CALLABLE as usize],
-        (stats.n_covered_bases as f64 / stats.length as f64) * 100.0,
-        stats.summed_coverage as f64 / stats.length as f64,
-        if stats.n_selected_reads > 0 {
+        // Add contig statistics table
+        html.push_str("<table>");
+        html.push_str("<thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>");
+
+        let counts = counter.get_contig_counts(&stats.name);
+        add_table_row(&mut html, "Unique Reads", stats.n_selected_reads);
+        add_table_row(&mut html, "Reference N", counts[CalledState::REF_N as usize]);
+        add_table_row(&mut html, "No Coverage", counts[CalledState::NO_COVERAGE as usize]);
+        add_table_row(&mut html, "Low Coverage", counts[CalledState::LOW_COVERAGE as usize]);
+        add_table_row(&mut html, "Excessive Coverage", counts[CalledState::EXCESSIVE_COVERAGE as usize]);
+        add_table_row(&mut html, "Poor Mapping Quality", counts[CalledState::POOR_MAPPING_QUALITY as usize]);
+        add_table_row(&mut html, "Callable", counts[CalledState::CALLABLE as usize]);
+
+        let coverage_percent = (stats.n_covered_bases as f64 / stats.length as f64) * 100.0;
+        let avg_depth = stats.summed_coverage as f64 / stats.length as f64;
+        let avg_mapq = if stats.n_selected_reads > 0 {
             stats.summed_mapq as f64 / stats.n_selected_reads as f64
         } else {
             0.0
-        },
-        if stats.quality_bases > 0 {
+        };
+        let avg_baseq = if stats.quality_bases > 0 {
             stats.summed_baseq as f64 / stats.quality_bases as f64
         } else {
             0.0
+        };
+
+        add_table_row(&mut html, "Coverage Percent", format!("{:.2}%", coverage_percent));
+        add_table_row(&mut html, "Average Depth", format!("{:.2}×", avg_depth));
+        add_table_row(&mut html, "Average MapQ", format!("{:.1}", avg_mapq));
+        add_table_row(&mut html, "Average BaseQ", format!("{:.1}", avg_baseq));
+
+        html.push_str("</tbody></table>");
+
+
+        // Add coverage plot if it exists
+        let plot_path = format!("{}_coverage.svg", stats.name);
+        if Path::new(&plot_path).exists() {
+            html.push_str(&format!(
+                r#"<figure class='coverage-plot'>
+                    <img src="{}" alt="Coverage distribution for {}" loading="lazy">
+                    <figcaption>Coverage distribution for {}</figcaption>
+                </figure>"#,
+                plot_path, stats.name, stats.name
+            ));
         }
-    )?;
+
+        html.push_str("</div>");
+    }
+
+    html.push_str(
+        r#"</section></main>
+<script>
+document.querySelectorAll('[role="tab"]').forEach(tab => {
+    tab.addEventListener('click', e => {
+        let selected = tab.getAttribute('aria-selected') === 'true';
+        if (!selected) {
+            // Deselect all tabs
+            document.querySelectorAll('[role="tab"]').forEach(t => {
+                t.setAttribute('aria-selected', 'false');
+            });
+            // Hide all panels
+            document.querySelectorAll('[role="tabpanel"]').forEach(p => {
+                p.setAttribute('aria-hidden', 'true');
+            });
+            // Select clicked tab and show its panel
+            tab.setAttribute('aria-selected', 'true');
+            document.getElementById(tab.getAttribute('aria-controls'))
+                .setAttribute('aria-hidden', 'false');
+        }
+    });
+});
+</script>
+</body>
+</html>"#,
+    );
+
+    let mut writer = BufWriter::new(File::create(output_summary)?);
+    writer.write_all(html.as_bytes())?;
+    writer.flush()?;
+
     Ok(())
+}
+
+fn add_table_row(html: &mut String, label: &str, value: impl std::fmt::Display) {
+    html.push_str(&format!("<tr><td>{}</td><td>{}</td></tr>", label, value));
 }
