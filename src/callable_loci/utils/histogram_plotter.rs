@@ -77,28 +77,20 @@ impl HistogramPlotter {
         let mut low_qual_depths = vec![0; array_size];
 
         for range in ranges {
-            // Convert genomic coordinates to array indices
-            let start_idx = ((range.start - self.min_cutoff) / self.stride_len) as usize;
-            let end_idx = ((range.end - self.min_cutoff) / self.stride_len) as usize;
-
-            // Record the range based on its state by incrementing counts
-            match range.state {
-                CalledState::CALLABLE => {
-                    for idx in start_idx..=end_idx {
-                        if idx < array_size {
+            // Process each position within the range
+            for pos in range.start..range.end {
+                let idx = ((pos - self.min_cutoff) / self.stride_len) as usize;
+                if idx < array_size {
+                    match range.state {
+                        CalledState::CALLABLE => {
                             callable_depths[idx] += 1;
                         }
-                    }
-                }
-                CalledState::POOR_MAPPING_QUALITY => {
-                    for idx in start_idx..=end_idx {
-                        if idx < array_size {
+                        CalledState::POOR_MAPPING_QUALITY => {
                             low_qual_depths[idx] += 1;
                         }
+                        _ => {}
                     }
                 }
-                // Other states (NO_COVERAGE, LOW_COVERAGE, etc.) are not displayed in the histogram
-                _ => {}
             }
         }
 
@@ -248,7 +240,8 @@ impl HistogramPlotter {
             let x_pos = idx;
 
             if callable_depths[idx] > 0 {
-                let height = (callable_depths[idx] as f32 / 100.0 * histogram_height as f32) as u32;
+                let height = (callable_depths[idx] as f32 / self.stride_len as f32
+                    * histogram_height as f32) as u32;
                 svg.push_str(
                     &SvgTag::new("rect")
                         .attr("x", x_pos)
@@ -262,10 +255,16 @@ impl HistogramPlotter {
             }
 
             if low_qual_depths[idx] > 0 {
-                let height = (low_qual_depths[idx] as f32 / 100.0 * histogram_height as f32) as u32;
-                let y_pos = total_header_height + histogram_height
-                    - height
-                    - (callable_depths[idx] as f32 / 100.0 * histogram_height as f32) as u32;
+                let height = (low_qual_depths[idx] as f32 / self.stride_len as f32
+                    * histogram_height as f32) as u32;
+                let callable_height = if callable_depths[idx] > 0 {
+                    (callable_depths[idx] as f32 / self.stride_len as f32 * histogram_height as f32)
+                        as u32
+                } else {
+                    0
+                };
+                let y_pos = total_header_height + histogram_height - height - callable_height;
+
                 svg.push_str(
                     &SvgTag::new("rect")
                         .attr("x", x_pos)
