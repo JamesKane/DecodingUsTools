@@ -23,11 +23,19 @@ decodingus-tools coverage \
   --reference <REFERENCE_FILE> \
   -o <callable_regions.bed> \
   -s <summary.html> \
+  [-L  ]... \
   <BAM_FILE> 
 ```
 
-Results in a callable region bed report for each contig in the BAM. Requires the original reference.
+Results in a callable region bed report and an interactive HTML summary for each contig in the BAM. Requires the original reference.
 Intended to replace `samtools coverage` and `gatk CallableLoci` with a single tool.
+
+Options:
+- `-L, --contig <CONTIG>`: Limit analysis to specific contigs. Can be specified multiple times. (Example: `-L chr1 -L chr2`)
+- `-r, --reference <FILE>`: Reference FASTA file
+- `-o, --output <FILE>`: Output BED file (default: callable_regions.bed)
+- `-s, --summary <FILE>`: Output HTML summary (default: summary.html)
+
 
 Example output: (callable_regions.bed)
 ```text
