@@ -4,6 +4,7 @@ mod types;
 mod utils;
 
 use crate::callable_loci::types::CalledState;
+use crate::haplogroup::types::ReferenceGenome;
 use bio::io::fasta::IndexedReader;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 pub use options::CallableOptions;
@@ -11,6 +12,7 @@ use profilers::{
     bam_stats::BamStats, callable_profiler::CallableProfiler, contig_profiler::ContigProfiler,
 };
 use rust_htslib::bam;
+use rust_htslib::bam::HeaderView;
 use rust_htslib::bam::Read;
 use std::collections::HashMap;
 use std::error::Error;
@@ -65,7 +67,13 @@ pub fn run(
     )?;
     finish_progress_bars(&contig_stats, &main_progress);
 
-    write_summary(&contig_stats, &counter, &output_summary, &bam_stats)?;
+    write_summary(
+        &contig_stats,
+        &counter,
+        &output_summary,
+        &bam_stats,
+        &bam_file,
+    )?;
     Ok(())
 }
 
@@ -238,9 +246,9 @@ fn process_single_contig(
                 contig,
                 current_pos,
                 ref_base,
-                0,  // raw_depth
-                0,  // qc_depth
-                0,  // low_mapq_count
+                0, // raw_depth
+                0, // qc_depth
+                0, // low_mapq_count
                 options,
             )?;
 
@@ -291,9 +299,9 @@ fn process_single_contig(
             contig,
             current_pos,
             ref_base,
-            0,  // raw_depth
-            0,  // qc_depth
-            0,  // low_mapq_count
+            0, // raw_depth
+            0, // qc_depth
+            0, // low_mapq_count
             options,
         )?;
 
@@ -321,7 +329,18 @@ fn write_summary(
     counter: &CallableProfiler,
     output_summary: &str,
     bam_stats: &BamStats,
+    bam_file: &str,
 ) -> Result<(), Box<dyn Error>> {
+    let bam = bam::IndexedReader::from_path(bam_file)?;
+    let header = bam.header();
+
+    // Detect reference genome
+    let genome = ReferenceGenome::from_header(header)
+        .map(|g| g.name().to_string())
+        .unwrap_or_else(|| "Unknown".to_string());
+
+    let aligner = detect_aligner(header);
+
     let mut html = String::new();
 
     html.push_str(
@@ -456,23 +475,29 @@ fn write_summary(
     html.push_str("<dl>");
     let stats = bam_stats.get_stats();
     html.push_str(&format!(
-        r#"<dt>Average read length</dt><dd>{:.1} bp</dd>
+        r#"<dt>Reference Build</dt><dd>{}</dd>
+        <dt>Aligner</dt><dd>{}</dd>
+        <dt>Average read length</dt><dd>{:.1} bp</dd>
         <dt>Paired reads</dt><dd>{:.1}%</dd>
         <dt>Average insert size</dt><dd>{:.1} bp</dd>"#,
+        genome,
+        aligner,
         stats.get("average_read_length").unwrap_or(&0.0),
         stats.get("paired_percentage").unwrap_or(&0.0),
         stats.get("average_insert_size").unwrap_or(&0.0)
     ));
     html.push_str("</dl></section>");
-    
+
     let mut sorted_stats: Vec<_> = contig_stats.iter().collect();
     sorted_stats.sort_by(|a, b| utils::natural_sort::natural_cmp(&a.1.name, &b.1.name));
 
     html.push_str(r#"<section class='tabs' role='tablist'>"#);
 
     // Add the contig selector
-    html.push_str(r#"<div class="contig-selector">
-    <select id="contig-select" onchange="switchToContig(this.value)" aria-label="Select contig">"#);
+    html.push_str(
+        r#"<div class="contig-selector">
+    <select id="contig-select" onchange="switchToContig(this.value)" aria-label="Select contig">"#,
+    );
 
     // Add options for each contig
     for (i, (_, stats)) in sorted_stats.iter().enumerate() {
@@ -501,12 +526,36 @@ fn write_summary(
 
         let counts = counter.get_contig_counts(&stats.name);
         add_table_row(&mut html, "Unique Reads", stats.n_selected_reads);
-        add_table_row(&mut html, "Reference N", counts[CalledState::REF_N as usize]);
-        add_table_row(&mut html, "No Coverage", counts[CalledState::NO_COVERAGE as usize]);
-        add_table_row(&mut html, "Low Coverage", counts[CalledState::LOW_COVERAGE as usize]);
-        add_table_row(&mut html, "Excessive Coverage", counts[CalledState::EXCESSIVE_COVERAGE as usize]);
-        add_table_row(&mut html, "Poor Mapping Quality", counts[CalledState::POOR_MAPPING_QUALITY as usize]);
-        add_table_row(&mut html, "Callable", counts[CalledState::CALLABLE as usize]);
+        add_table_row(
+            &mut html,
+            "Reference N",
+            counts[CalledState::REF_N as usize],
+        );
+        add_table_row(
+            &mut html,
+            "No Coverage",
+            counts[CalledState::NO_COVERAGE as usize],
+        );
+        add_table_row(
+            &mut html,
+            "Low Coverage",
+            counts[CalledState::LOW_COVERAGE as usize],
+        );
+        add_table_row(
+            &mut html,
+            "Excessive Coverage",
+            counts[CalledState::EXCESSIVE_COVERAGE as usize],
+        );
+        add_table_row(
+            &mut html,
+            "Poor Mapping Quality",
+            counts[CalledState::POOR_MAPPING_QUALITY as usize],
+        );
+        add_table_row(
+            &mut html,
+            "Callable",
+            counts[CalledState::CALLABLE as usize],
+        );
 
         let coverage_percent = (stats.n_covered_bases as f64 / stats.length as f64) * 100.0;
         let avg_depth = stats.summed_coverage as f64 / stats.length as f64;
@@ -521,13 +570,16 @@ fn write_summary(
             0.0
         };
 
-        add_table_row(&mut html, "Coverage Percent", format!("{:.2}%", coverage_percent));
+        add_table_row(
+            &mut html,
+            "Coverage Percent",
+            format!("{:.2}%", coverage_percent),
+        );
         add_table_row(&mut html, "Average Depth", format!("{:.2}×", avg_depth));
         add_table_row(&mut html, "Average MapQ", format!("{:.1}", avg_mapq));
         add_table_row(&mut html, "Average BaseQ", format!("{:.1}", avg_baseq));
 
         html.push_str("</tbody></table>");
-
 
         // Add coverage plot if it exists
         let plot_path = format!("{}_coverage.svg", stats.name);
@@ -579,4 +631,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
 fn add_table_row(html: &mut String, label: &str, value: impl std::fmt::Display) {
     html.push_str(&format!("<tr><td>{}</td><td>{}</td></tr>", label, value));
+}
+
+fn detect_aligner(header: &HeaderView) -> String {
+    let header_text = String::from_utf8_lossy(header.as_bytes()).to_string();
+    let header_lower = header_text.to_lowercase();
+
+    // Check for common aligners in header
+    if header_lower.contains("@pg\tid:bwa") {
+        "BWA".to_string()
+    } else if header_lower.contains("@pg\tid:minimap2") {
+        "minimap2".to_string()
+    } else if header_lower.contains("@pg\tid:bowtie2") {
+        "Bowtie2".to_string()
+    } else if header_lower.contains("@pg\tid:star") {
+        "STAR".to_string()
+    } else if header_lower.contains("bwa") {
+        "BWA".to_string()
+    } else if header_lower.contains("minimap2") {
+        "minimap2".to_string()
+    } else if header_lower.contains("bowtie2") {
+        "Bowtie2".to_string()
+    } else if header_lower.contains("star") {
+        "STAR".to_string()
+    } else {
+        "Unknown".to_string()
+    }
 }
