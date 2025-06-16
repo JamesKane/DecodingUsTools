@@ -422,6 +422,22 @@ fn write_summary(
             margin-top: 0.5rem;
             color: #666;
         }
+                .contig-selector {
+            margin: 1em 0;
+        }
+        .contig-selector select {
+            width: 300px;
+            padding: 8px;
+            border: 1px solid var(--border-color);
+            border-radius: 0.5rem;
+            font-size: 1rem;
+            background: var(--bg-light);
+        }
+        .contig-selector select:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.2);
+        }
     </style>
 </head>
 <body>
@@ -448,25 +464,27 @@ fn write_summary(
         stats.get("average_insert_size").unwrap_or(&0.0)
     ));
     html.push_str("</dl></section>");
-
-    // Add tabbed interface for contigs
-    html.push_str(r#"<section class='tabs' role='tablist'>"#);
-    html.push_str(r#"<ul class='tab-list'>"#);
-
+    
     let mut sorted_stats: Vec<_> = contig_stats.iter().collect();
     sorted_stats.sort_by(|a, b| utils::natural_sort::natural_cmp(&a.1.name, &b.1.name));
 
-    // Add tab buttons
+    html.push_str(r#"<section class='tabs' role='tablist'>"#);
+
+    // Add the contig selector
+    html.push_str(r#"<div class="contig-selector">
+    <select id="contig-select" onchange="switchToContig(this.value)" aria-label="Select contig">"#);
+
+    // Add options for each contig
     for (i, (_, stats)) in sorted_stats.iter().enumerate() {
         html.push_str(&format!(
-            r#"<li><button class="tab-button" role="tab" aria-selected="{}" aria-controls="panel-{}" id="tab-{}">{}</button></li>"#,
-            i == 0,
+            r#"<option value="{}" {}>{}</option>"#,
             i,
-            i,
+            if i == 0 { "selected" } else { "" },
             stats.name
         ));
     }
-    html.push_str("</ul>");
+
+    html.push_str("</select></div>");
 
     // Add tab panels
     for (i, (_, stats)) in sorted_stats.iter().enumerate() {
@@ -529,24 +547,23 @@ fn write_summary(
     html.push_str(
         r#"</section></main>
 <script>
-document.querySelectorAll('[role="tab"]').forEach(tab => {
-    tab.addEventListener('click', e => {
-        let selected = tab.getAttribute('aria-selected') === 'true';
-        if (!selected) {
-            // Deselect all tabs
-            document.querySelectorAll('[role="tab"]').forEach(t => {
-                t.setAttribute('aria-selected', 'false');
-            });
-            // Hide all panels
-            document.querySelectorAll('[role="tabpanel"]').forEach(p => {
-                p.setAttribute('aria-hidden', 'true');
-            });
-            // Select clicked tab and show its panel
-            tab.setAttribute('aria-selected', 'true');
-            document.getElementById(tab.getAttribute('aria-controls'))
-                .setAttribute('aria-hidden', 'false');
-        }
+function switchToContig(index) {
+    // Hide all panels
+    document.querySelectorAll('[role="tabpanel"]').forEach(panel => {
+        panel.setAttribute('aria-hidden', 'true');
     });
+    
+    // Show selected panel
+    const selectedPanel = document.getElementById('panel-' + index);
+    selectedPanel.setAttribute('aria-hidden', 'false');
+}
+
+// Initial setup
+document.addEventListener('DOMContentLoaded', () => {
+    const select = document.getElementById('contig-select');
+    if (select) {
+        switchToContig(select.value);
+    }
 });
 </script>
 </body>
