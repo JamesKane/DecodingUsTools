@@ -7,7 +7,7 @@ use crate::callable_loci::types::CalledState;
 use bio::io::fasta::IndexedReader;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 pub use options::CallableOptions;
-use profilers::{callable_profiler::CallableProfiler, contig_profiler::ContigProfiler};
+use profilers::{callable_profiler::CallableProfiler, contig_profiler::ContigProfiler, bam_stats::BamStats};
 use rust_htslib::bam;
 use rust_htslib::bam::Read;
 use std::collections::HashMap;
@@ -23,6 +23,24 @@ pub fn run(
     mut options: CallableOptions,
     contigs: Option<Vec<String>>,
 ) -> Result<(), Box<dyn Error>> {
+    // Create and collect BAM statistics first
+    let mut bam_stats = BamStats::new(10000);
+    bam_stats.collect_stats(&bam_file)?;
+
+    // Print BAM statistics
+    let stats = bam_stats.get_stats();
+    println!("\nBAM Statistics:");
+    if let Some(avg_read_length) = stats.get("average_read_length") {
+        println!("Average read length: {:.1} bp", avg_read_length);
+    }
+    if let Some(paired_percentage) = stats.get("paired_percentage") {
+        println!("Paired reads: {:.1}%", paired_percentage);
+    }
+    if let Some(avg_insert_size) = stats.get("average_insert_size") {
+        println!("Average insert size: {:.1} bp", avg_insert_size);
+    }
+    println!(); // Add a blank line for better formatting
+
     options = options.with_contigs(contigs);
 
     let mut bam = bam::IndexedReader::from_path(&bam_file)?;
