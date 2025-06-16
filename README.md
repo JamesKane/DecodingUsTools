@@ -22,12 +22,20 @@ copy the binary to a location already in your PATH.
 decodingus-tools coverage \
   --reference <REFERENCE_FILE> \
   -o <callable_regions.bed> \
-  -s <table.txt> \
+  -s <summary.html> \
+  [-L  ]... \
   <BAM_FILE> 
 ```
 
-Results in a callable region bed report for each contig in the BAM. Requires the original reference.
+Results in a callable region bed report and an interactive HTML summary for each contig in the BAM. Requires the original reference.
 Intended to replace `samtools coverage` and `gatk CallableLoci` with a single tool.
+
+Options:
+- `-L, --contig <CONTIG>`: Limit analysis to specific contigs. Can be specified multiple times. (Example: `-L chr1 -L chr2`)
+- `-r, --reference <FILE>`: Reference FASTA file
+- `-o, --output <FILE>`: Output BED file (default: callable_regions.bed)
+- `-s, --summary <FILE>`: Output HTML summary (default: summary.html)
+
 
 Example output: (callable_regions.bed)
 ```text
@@ -43,9 +51,16 @@ chr1	10408	10410	LOW_COVERAGE
 chr1	10411	10412	CALLABLE
 ```
 
-Example output: (table.txt)
-```text
-```
+The HTML summary provides an interactive report with:
+- Overall BAM statistics (read length, paired percentage, insert size)
+- Per-contig statistics including:
+    - Coverage metrics (callable bases, low coverage regions, etc.)
+    - Average depth and quality scores
+    - Coverage distribution plots
+- Interactive contig selection via searchable dropdown
+- SVG coverage plots for visual analysis
+
+The summary can be viewed in any modern web browser.
 
 ### Y-DNA Branch Finding
 

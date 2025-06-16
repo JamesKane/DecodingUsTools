@@ -38,11 +38,25 @@ impl CallableProfiler {
 
     fn write_state(&mut self) -> IoResult<()> {
         if let Some((contig, start, end, state)) = &self.current_state {
+            // Write to BED file
             writeln!(
                 self.bed_writer,
                 "{}\t{}\t{}\t{:?}",
                 contig, start, end, state
             )?;
+
+            // Add to coverage ranges for histogram plotting
+            // Only add states we're interested in for the histogram
+            match state {
+                CalledState::CALLABLE | CalledState::POOR_MAPPING_QUALITY | CalledState::REF_N => {
+                    self.coverage_ranges.push(CoverageRange {
+                        start: *start as u32,
+                        end: *end as u32,
+                        state: *state,
+                    });
+                }
+                _ => {}  // Skip other states for the histogram
+            }
         }
         Ok(())
     }
@@ -106,6 +120,11 @@ impl CallableProfiler {
     }
 
     fn process_state(&mut self, contig: &str, pos: u64, state: CalledState) -> Result<(), Box<dyn Error>> {
+        // Get or insert counts for this contig
+        let counts = self.contig_counts.entry(contig.to_string()).or_insert([0; 6]);
+        // Increment the count for this state
+        counts[state as usize] += 1;
+
         if self.current_state.is_none() {
             if state == CalledState::REF_N {
                 // For REF_N, just start tracking from 0
