@@ -102,47 +102,39 @@ impl CallableProfiler {
         };
 
         // Process state internally using both state and is_low_mapq for range extension
-        self.process_state(contig, pos, state)
+        self.process_state(contig, pos as u64, state)
     }
 
-    fn process_state(
-        &mut self,
-        contig: &str,
-        pos: u32,
-        state: CalledState,
-    ) -> Result<(), Box<dyn Error>> {
-        self.counts[state as usize] += 1;
-
-        self.contig_counts
-            .entry(contig.to_string())
-            .or_insert([0; 6])[state as usize] += 1;
-
-        match self.coverage_ranges.last_mut() {
-            Some(range) if range.can_merge(pos, state) => {
-                range.extend(pos);
+    fn process_state(&mut self, contig: &str, pos: u64, state: CalledState) -> Result<(), Box<dyn Error>> {
+        if self.current_state.is_none() {
+            if state == CalledState::REF_N {
+                // For REF_N, just start tracking from 0
+                self.current_state = Some((contig.to_string(), 0, pos + 1, state));
+            } else {
+                // For non-REF_N states, write the initial REF_N range first
+                if pos > 0 {
+                    self.current_state = Some((contig.to_string(), 0, pos, CalledState::REF_N));
+                    self.write_state()?;
+                }
+                self.current_state = Some((contig.to_string(), pos, pos + 1, state));
             }
-            _ => {
-                self.coverage_ranges.push(CoverageRange::new(pos, state));
-            }
+            return Ok(());
         }
 
-        // Handle state tracking (existing code)
-        match &mut self.current_state {
-            Some((cur_contig, _start, end, cur_state)) => {
-                if contig != cur_contig || state != *cur_state || pos as u64 != *end + 1 {
-                    self.write_state()?;
-                    self.current_state = Some((contig.to_string(), pos as u64, pos as u64, state));
-                } else {
-                    *end = pos as u64;
-                }
-            }
-            None => {
-                self.current_state = Some((contig.to_string(), pos as u64, pos as u64, state));
+        if let Some((ref current_contig, _, ref mut end, ref current_state)) = self.current_state {
+            if current_contig == contig && *current_state == state {
+                // Extend current range
+                *end = pos + 1;
+            } else {
+                // Write current state and start new one
+                self.write_state()?;
+                self.current_state = Some((contig.to_string(), pos, pos + 1, state));
             }
         }
 
         Ok(())
     }
+
 
     pub fn get_contig_counts(&self, contig: &str) -> [u64; 6] {
         self.contig_counts.get(contig).copied().unwrap_or([0; 6])
