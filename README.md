@@ -22,7 +22,7 @@ copy the binary to a location already in your PATH.
 decodingus-tools coverage \
   --reference <REFERENCE_FILE> \
   -o <callable_regions.bed> \
-  -s <table.txt> \
+  -s <summary.html> \
   <BAM_FILE> 
 ```
 
@@ -43,9 +43,16 @@ chr1	10408	10410	LOW_COVERAGE
 chr1	10411	10412	CALLABLE
 ```
 
-Example output: (table.txt)
-```text
-```
+The HTML summary provides an interactive report with:
+- Overall BAM statistics (read length, paired percentage, insert size)
+- Per-contig statistics including:
+    - Coverage metrics (callable bases, low coverage regions, etc.)
+    - Average depth and quality scores
+    - Coverage distribution plots
+- Interactive contig selection via searchable dropdown
+- SVG coverage plots for visual analysis
+
+The summary can be viewed in any modern web browser.
 
 ### Y-DNA Branch Finding
 
