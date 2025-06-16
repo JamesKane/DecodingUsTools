@@ -1,0 +1,22 @@
+<script>
+function switchToContig(index) {
+    // Hide all panels
+    document.querySelectorAll('[role="tabpanel"]').forEach(panel => {
+        panel.setAttribute('aria-hidden', 'true');
+    });
+    
+    // Show selected panel
+    const selectedPanel = document.getElementById('panel-' + index);
+    selectedPanel.setAttribute('aria-hidden', 'false');
+}
+
+// Initial setup
+document.addEventListener('DOMContentLoaded', () => {
+    const select = document.getElementById('contig-select');
+    if (select) {
+        switchToContig(select.value);
+    }
+});
+</script>
+</body>
+</html>

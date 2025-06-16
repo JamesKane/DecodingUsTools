@@ -1,10 +1,10 @@
 mod options;
 mod profilers;
+mod report;
 mod types;
 mod utils;
 
 use crate::callable_loci::types::CalledState;
-use crate::haplogroup::types::ReferenceGenome;
 use bio::io::fasta::IndexedReader;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 pub use options::CallableOptions;
@@ -17,7 +17,7 @@ use rust_htslib::bam::Read;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::Write;
 
 pub fn run(
     bam_file: String,
@@ -67,13 +67,12 @@ pub fn run(
     )?;
     finish_progress_bars(&contig_stats, &main_progress);
 
-    write_summary(
-        &contig_stats,
-        &counter,
-        &output_summary,
-        &bam_stats,
-        &bam_file,
-    )?;
+    // Create the report model
+    let report = report::collect_analysis_report(&bam_file, &bam_stats, &contig_stats, &counter)?;
+
+    // Generate HTML report
+    report::write_html_report(&report, &output_summary)?;
+
     Ok(())
 }
 
@@ -321,316 +320,6 @@ fn finish_progress_bars(
         stats.progress_bar.finish_with_message("Complete");
     }
     main_progress.finish_with_message("Coverage analysis complete!");
-}
-
-use std::path::Path;
-fn write_summary(
-    contig_stats: &HashMap<usize, ContigProfiler>,
-    counter: &CallableProfiler,
-    output_summary: &str,
-    bam_stats: &BamStats,
-    bam_file: &str,
-) -> Result<(), Box<dyn Error>> {
-    let bam = bam::IndexedReader::from_path(bam_file)?;
-    let header = bam.header();
-
-    // Detect reference genome
-    let genome = ReferenceGenome::from_header(header)
-        .map(|g| g.name().to_string())
-        .unwrap_or_else(|| "Unknown".to_string());
-
-    let aligner = detect_aligner(header);
-
-    let mut html = String::new();
-
-    html.push_str(
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BAM Analysis Report</title>
-    <style>
-        :root {
-            --primary-color: #007bff;
-            --border-color: #ddd;
-            --bg-light: #f5f5f5;
-        }
-        body { 
-            font-family: system-ui, -apple-system, sans-serif;
-            margin: 0;
-            padding: 2rem;
-        }
-        main {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-        .stats-box { 
-            background: var(--bg-light);
-            padding: 1.25rem;
-            border-radius: 0.5rem;
-            margin-bottom: 2rem;
-        }
-        .sample-note {
-            color: #666;
-            font-style: italic;
-            font-size: 0.9em;
-        }
-        .tabs {
-            margin-top: 1.25rem;
-        }
-        .tab-list {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.5rem;
-            margin-bottom: 1.25rem;
-            list-style: none;
-            padding: 0;
-        }
-        .tab-button {
-            padding: 0.625rem 1.25rem;
-            border: none;
-            background: var(--bg-light);
-            cursor: pointer;
-            border-radius: 0.25rem;
-            font-size: 1rem;
-        }
-        .tab-button:hover {
-            background: #e0e0e0;
-        }
-        .tab-button[aria-selected="true"] {
-            background: var(--primary-color);
-            color: white;
-        }
-        .tab-panel {
-            display: none;
-            padding: 1.25rem;
-            border: 1px solid var(--border-color);
-            border-radius: 0.5rem;
-        }
-        .tab-panel[aria-hidden="false"] {
-            display: block;
-        }
-        table {
-            border-collapse: collapse;
-            width: 100%;
-            margin-bottom: 1.25rem;
-        }
-        th, td {
-            border: 1px solid var(--border-color);
-            padding: 0.5rem;
-            text-align: left;
-        }
-        th { background-color: var(--bg-light); }
-        .coverage-plot {
-            width: 100%;
-            margin-top: 1.25rem;
-        }
-        .coverage-plot img {
-            width: 100%;
-            height: auto;
-            display: block;
-            max-width: 100%;
-            object-fit: contain;
-        }
-        figure {
-            margin: 0;
-        }
-        figcaption {
-            text-align: center;
-            margin-top: 0.5rem;
-            color: #666;
-        }
-                .contig-selector {
-            margin: 1em 0;
-        }
-        .contig-selector select {
-            width: 300px;
-            padding: 8px;
-            border: 1px solid var(--border-color);
-            border-radius: 0.5rem;
-            font-size: 1rem;
-            background: var(--bg-light);
-        }
-        .contig-selector select:focus {
-            outline: none;
-            border-color: var(--primary-color);
-            box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.2);
-        }
-    </style>
-</head>
-<body>
-<main>
-    <h1>BAM Analysis Report</h1>
-"#,
-    );
-
-    // Add BAM Statistics section
-    html.push_str(r#"<section class='stats-box'>"#);
-    html.push_str(&format!(
-        r#"<h2>BAM Statistics <span class='sample-note'>(based on first {} reads)</span></h2>"#,
-        bam_stats.max_samples
-    ));
-
-    html.push_str("<dl>");
-    let stats = bam_stats.get_stats();
-    html.push_str(&format!(
-        r#"<dt>Reference Build</dt><dd>{}</dd>
-        <dt>Aligner</dt><dd>{}</dd>
-        <dt>Average read length</dt><dd>{:.1} bp</dd>
-        <dt>Paired reads</dt><dd>{:.1}%</dd>
-        <dt>Average insert size</dt><dd>{:.1} bp</dd>"#,
-        genome,
-        aligner,
-        stats.get("average_read_length").unwrap_or(&0.0),
-        stats.get("paired_percentage").unwrap_or(&0.0),
-        stats.get("average_insert_size").unwrap_or(&0.0)
-    ));
-    html.push_str("</dl></section>");
-
-    let mut sorted_stats: Vec<_> = contig_stats.iter().collect();
-    sorted_stats.sort_by(|a, b| utils::natural_sort::natural_cmp(&a.1.name, &b.1.name));
-
-    html.push_str(r#"<section class='tabs' role='tablist'>"#);
-
-    // Add the contig selector
-    html.push_str(
-        r#"<div class="contig-selector">
-    <select id="contig-select" onchange="switchToContig(this.value)" aria-label="Select contig">"#,
-    );
-
-    // Add options for each contig
-    for (i, (_, stats)) in sorted_stats.iter().enumerate() {
-        html.push_str(&format!(
-            r#"<option value="{}" {}>{}</option>"#,
-            i,
-            if i == 0 { "selected" } else { "" },
-            stats.name
-        ));
-    }
-
-    html.push_str("</select></div>");
-
-    // Add tab panels
-    for (i, (_, stats)) in sorted_stats.iter().enumerate() {
-        html.push_str(&format!(
-            r#"<div class="tab-panel" role="tabpanel" id="panel-{}" aria-labelledby="tab-{}" aria-hidden="{}">"#,
-            i,
-            i,
-            i != 0
-        ));
-
-        // Add contig statistics table
-        html.push_str("<table>");
-        html.push_str("<thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>");
-
-        let counts = counter.get_contig_counts(&stats.name);
-        add_table_row(&mut html, "Unique Reads", stats.n_selected_reads);
-        add_table_row(
-            &mut html,
-            "Reference N",
-            counts[CalledState::REF_N as usize],
-        );
-        add_table_row(
-            &mut html,
-            "No Coverage",
-            counts[CalledState::NO_COVERAGE as usize],
-        );
-        add_table_row(
-            &mut html,
-            "Low Coverage",
-            counts[CalledState::LOW_COVERAGE as usize],
-        );
-        add_table_row(
-            &mut html,
-            "Excessive Coverage",
-            counts[CalledState::EXCESSIVE_COVERAGE as usize],
-        );
-        add_table_row(
-            &mut html,
-            "Poor Mapping Quality",
-            counts[CalledState::POOR_MAPPING_QUALITY as usize],
-        );
-        add_table_row(
-            &mut html,
-            "Callable",
-            counts[CalledState::CALLABLE as usize],
-        );
-
-        let coverage_percent = (stats.n_covered_bases as f64 / stats.length as f64) * 100.0;
-        let avg_depth = stats.summed_coverage as f64 / stats.length as f64;
-        let avg_mapq = if stats.n_selected_reads > 0 {
-            stats.summed_mapq as f64 / stats.n_selected_reads as f64
-        } else {
-            0.0
-        };
-        let avg_baseq = if stats.quality_bases > 0 {
-            stats.summed_baseq as f64 / stats.quality_bases as f64
-        } else {
-            0.0
-        };
-
-        add_table_row(
-            &mut html,
-            "Coverage Percent",
-            format!("{:.2}%", coverage_percent),
-        );
-        add_table_row(&mut html, "Average Depth", format!("{:.2}×", avg_depth));
-        add_table_row(&mut html, "Average MapQ", format!("{:.1}", avg_mapq));
-        add_table_row(&mut html, "Average BaseQ", format!("{:.1}", avg_baseq));
-
-        html.push_str("</tbody></table>");
-
-        // Add coverage plot if it exists
-        let plot_path = format!("{}_coverage.svg", stats.name);
-        if Path::new(&plot_path).exists() {
-            html.push_str(&format!(
-                r#"<figure class='coverage-plot'>
-                    <img src="{}" alt="Coverage distribution for {}" loading="lazy">
-                    <figcaption>Coverage distribution for {}</figcaption>
-                </figure>"#,
-                plot_path, stats.name, stats.name
-            ));
-        }
-
-        html.push_str("</div>");
-    }
-
-    html.push_str(
-        r#"</section></main>
-<script>
-function switchToContig(index) {
-    // Hide all panels
-    document.querySelectorAll('[role="tabpanel"]').forEach(panel => {
-        panel.setAttribute('aria-hidden', 'true');
-    });
-    
-    // Show selected panel
-    const selectedPanel = document.getElementById('panel-' + index);
-    selectedPanel.setAttribute('aria-hidden', 'false');
-}
-
-// Initial setup
-document.addEventListener('DOMContentLoaded', () => {
-    const select = document.getElementById('contig-select');
-    if (select) {
-        switchToContig(select.value);
-    }
-});
-</script>
-</body>
-</html>"#,
-    );
-
-    let mut writer = BufWriter::new(File::create(output_summary)?);
-    writer.write_all(html.as_bytes())?;
-    writer.flush()?;
-
-    Ok(())
-}
-
-fn add_table_row(html: &mut String, label: &str, value: impl std::fmt::Display) {
-    html.push_str(&format!("<tr><td>{}</td><td>{}</td></tr>", label, value));
 }
 
 fn detect_aligner(header: &HeaderView) -> String {
