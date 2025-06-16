@@ -71,10 +71,11 @@ impl HistogramPlotter {
         }
     }
 
-    fn process_coverage_ranges(&self, ranges: &[CoverageRange]) -> (Vec<u32>, Vec<u32>) {
+    fn process_coverage_ranges(&self, ranges: &[CoverageRange]) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
         let array_size = ((self.max_cutoff - self.min_cutoff) / self.stride_len) as usize + 1;
         let mut callable_depths = vec![0; array_size];
         let mut low_qual_depths = vec![0; array_size];
+        let mut ref_n_depths = vec![0; array_size];
 
         for range in ranges {
             // Process each position within the range
@@ -88,19 +89,23 @@ impl HistogramPlotter {
                         CalledState::POOR_MAPPING_QUALITY => {
                             low_qual_depths[idx] += 1;
                         }
+                        CalledState::REF_N => {
+                            ref_n_depths[idx] += 1;
+                        }
                         _ => {}
                     }
                 }
             }
         }
 
-        (callable_depths, low_qual_depths)
+        (callable_depths, low_qual_depths, ref_n_depths)
     }
 
     fn generate_svg(
         &self,
         callable_depths: &[u32],
         low_qual_depths: &[u32],
+        ref_n_depths: &[u32],
         contig_name: &str,
     ) -> String {
         let svg_width = ((self.max_cutoff - self.min_cutoff) / self.stride_len) as u32;
@@ -239,6 +244,22 @@ impl HistogramPlotter {
             let idx = ((x - self.min_cutoff) / self.stride_len) as usize;
             let x_pos = idx;
 
+            // Plot REF_N first (black bars)
+            if ref_n_depths[idx] > 0 {
+                let height = histogram_height; // Full height for REF_N regions
+                svg.push_str(
+                    &SvgTag::new("rect")
+                        .attr("x", x_pos)
+                        .attr("y", total_header_height)
+                        .attr("width", 1)
+                        .attr("height", height)
+                        .attr("fill", "#000000")
+                        .render(true),
+                );
+                svg.push('\n');
+                continue; // Skip other bars for this position
+            }
+
             if callable_depths[idx] > 0 {
                 let height = (callable_depths[idx] as f32 / self.stride_len as f32
                     * histogram_height as f32) as u32;
@@ -359,6 +380,29 @@ impl HistogramPlotter {
         svg.push_str("Low Quality Coverage");
         svg.push_str("</text>\n");
 
+        // Add REF_N to legend
+        svg.push_str(
+            &SvgTag::new("rect")
+                .attr("x", legend_start_x + 300)
+                .attr("y", legend_y)
+                .attr("width", 20)
+                .attr("height", 10)
+                .attr("fill", "#000000")
+                .render(true),
+        );
+        svg.push_str(
+            &SvgTag::new("text")
+                .attr("x", legend_start_x + 325)
+                .attr("y", legend_y + 8)
+                .attr("font-family", "Arial")
+                .attr("font-size", "12")
+                .attr("fill", "#000000")
+                .render(false),
+        );
+        svg.push_str("Reference N");
+        svg.push_str("</text>\n");
+
+
         // Close the group tag
         svg.push_str("</svg>\n");
         svg
@@ -394,9 +438,9 @@ pub(crate) fn generate_histogram(
         0xFFFFFF,      // canvas_background (white)
     );
 
-    let (callable_depths, low_qual_depths) = plotter.process_coverage_ranges(&ranges);
+    let (callable_depths, low_qual_depths, ref_n_depths) = plotter.process_coverage_ranges(&ranges);
 
-    let svg_content = plotter.generate_svg(&callable_depths, &low_qual_depths, contig_name);
+    let svg_content = plotter.generate_svg(&callable_depths, &low_qual_depths, &ref_n_depths, contig_name);
 
     let temp_file = Builder::new()
         .prefix(file_name_prefix)
