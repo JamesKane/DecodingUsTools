@@ -121,22 +121,52 @@ When a GAM file is surjected back via `vg surject` to a linear BAM, the results 
 ```shell
 decodingus-tools fingerprint \
   [-r <REFERENCE_FILE>] \
+  [-o <OUTPUT_FILE>]
   [--ksize <K-MER_SIZE>] \
   [--scaled <SCALED_FACTOR>] \
   <INPUT_FILE>
 ```
-Generate a unique MinHash-based fingerprint for sequencing data files (BAM, CRAM, or FASTQ). Useful for:
-- Quick sequence similarity comparison
-- Data provenance tracking
-- Identifying duplicate or related samples
+Generate a MinHash-based fingerprint for sequencing data files (BAM, CRAM, or FASTQ). The tool serves two main purposes:
+1. Generating a unique identifier (hash) for a sequence file
+2. Creating a k-mer sketch file that enables rapid similarity comparisons between samples
 
 Options:
 - : Reference FASTA file (required for CRAM files) `-r, --reference <FILE>`
+- `-o, --output <FILE>`: Save k-mer hashes to file for further analysis
 - `--ksize <INT>`: K-mer size for MinHash sketching (default: 31)
 - `--scaled <INT>`: MinHash scaled factor (default: 1000)
 
 The tool processes the input file in parallel using available CPU cores, providing progress updates every few seconds.
 
+#### Use Cases
+
+**Unique Identification:**
+- Quick file integrity verification
+- Data provenance tracking
+- Identifying duplicate samples
+
+**Similarity Analysis:**
+When using the `-o` option, the tool saves k-mer hashes that can be used to calculate Jaccard similarity indices between samples. This enables:
+- Rapid sample relatedness assessment
+- Population clustering
+- Sample contamination detection
+- Family relationship verification
+
+#### Parameter Optimization Note
+The default parameters are being tuned for human genome-scale data. For human WGS data, you may need to adjust:
+- `--scaled`: Higher values (e.g., 10000) reduce memory usage but maintain statistical significance
+- `--ksize`: The k-mer size affects specificity vs. sensitivity
+
+*Note: Optimal parameters for human genome analysis are being determined through empirical testing. Check documentation for updates on recommended values.*
+
+#### K-mer File Format
+The output file contains:
+```text
+#ksize=31
+#scaled=1000
+<hash1>
+<hash2>
+```
 
 ### Configuration
 

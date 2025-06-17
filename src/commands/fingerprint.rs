@@ -6,8 +6,8 @@ use seahash::SeaHasher;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::hash::Hasher;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-
 
 #[derive(Debug)]
 struct FastFingerprint {
@@ -44,7 +44,8 @@ impl FastFingerprint {
 
         let num_kmers = sequence.len() - self.ksize + 1;
         self.progress.inc(1);
-        self.progress.set_message(format!("Processing {} bp sequence", sequence.len()));
+        self.progress
+            .set_message(format!("Processing {} bp sequence", sequence.len()));
 
         for i in 0..num_kmers {
             let kmer = &sequence[i..i + self.ksize];
@@ -60,24 +61,25 @@ impl FastFingerprint {
     }
 
     fn hash_kmer(&self, kmer: &[u8]) -> u64 {
-        let canonical = {
-            let rev_comp: Vec<u8> = kmer.iter()
-                .rev()
-                .map(|&b| match b {
-                    b'A' => b'T',
-                    b'T' => b'A',
-                    b'C' => b'G',
-                    b'G' => b'C',
-                    _ => b'N',
-                })
-                .collect();
+        // Ensure aligned memory access by copying to a new Vec
+        let mut canonical = Vec::with_capacity(self.ksize);
+        let rev_comp: Vec<u8> = kmer
+            .iter()
+            .rev()
+            .map(|&b| match b {
+                b'A' => b'T',
+                b'T' => b'A',
+                b'C' => b'G',
+                b'G' => b'C',
+                _ => b'N',
+            })
+            .collect();
 
-            if kmer < rev_comp.as_slice() {
-                kmer.to_vec()
-            } else {
-                rev_comp
-            }
-        };
+        if kmer < rev_comp.as_slice() {
+            canonical.extend_from_slice(kmer);
+        } else {
+            canonical = rev_comp;
+        }
 
         let mut hasher = SeaHasher::new();
         hasher.write(&canonical);
@@ -89,7 +91,7 @@ impl FastFingerprint {
         progress.set_style(
             ProgressStyle::default_spinner()
                 .template("{spinner:.green} {msg}")
-                .unwrap()
+                .unwrap(),
         );
         progress.set_message("Finalizing fingerprint...");
 
@@ -102,8 +104,39 @@ impl FastFingerprint {
             hasher.update(hash.to_le_bytes());
         }
 
-        progress.finish_with_message(format!("Generated fingerprint from {} distinct k-mers", self.hashes.len()));
+        progress.finish_with_message(format!(
+            "Generated fingerprint from {} distinct k-mers",
+            self.hashes.len()
+        ));
         format!("{:x}", hasher.finalize())
+    }
+
+    fn save_hashes(&self, output_path: &Path) -> Result<()> {
+        let progress = ProgressBar::new_spinner();
+        progress.set_style(ProgressStyle::default_spinner().template("{spinner:.green} {msg}")?);
+        progress.set_message("Saving k-mer hashes...");
+
+        let mut sorted_hashes: Vec<_> = self.hashes.iter().collect();
+        sorted_hashes.sort();
+
+        let file = std::fs::File::create(output_path).context("Failed to create output file")?;
+        let mut writer = std::io::BufWriter::new(file);
+
+        // Write header with parameters
+        writeln!(writer, "#ksize={}", self.ksize).context("Failed to write ksize")?;
+        writeln!(writer, "#scaled={}", self.scaled).context("Failed to write scaled factor")?;
+
+        // Write hashes one per line
+        for &hash in &sorted_hashes {
+            writeln!(writer, "{}", hash).context("Failed to write hash")?;
+        }
+
+        progress.finish_with_message(format!(
+            "Saved {} k-mer hashes to {}",
+            self.hashes.len(),
+            output_path.display()
+        ));
+        Ok(())
     }
 }
 
@@ -115,14 +148,19 @@ pub fn run(
     reference_file: Option<String>,
     ksize: usize,
     scaled: usize,
+    output_file: Option<String>,
 ) -> Result<()> {
     let input_path = PathBuf::from(&input_file);
     let mut fp = FastFingerprint::new(ksize, scaled);
 
     match input_path.extension().and_then(|ext| ext.to_str()) {
         Some("bam") | Some("cram") => process_bam(&input_path, &mut fp, reference_file)?,
-        Some(ext) if ext == "fastq" || ext == "fq" || ext == "gz" => process_fastq(&input_path, &mut fp)?,
-        _ => anyhow::bail!("Unsupported file format. Must be .fastq, .fq, .fastq.gz, .fq.gz, .bam, or .cram")
+        Some(ext) if ext == "fastq" || ext == "fq" || ext == "gz" => {
+            process_fastq(&input_path, &mut fp)?
+        }
+        _ => anyhow::bail!(
+            "Unsupported file format. Must be .fastq, .fq, .fastq.gz, .fq.gz, .bam, or .cram"
+        ),
     }
 
     if fp.hashes.is_empty() {
@@ -130,32 +168,40 @@ pub fn run(
     }
 
     println!("{}", fp.hexdigest());
+
+    // Save hashes if output file is specified
+    if let Some(output_path) = output_file {
+        fp.save_hashes(Path::new(&output_path))?;
+    }
+
     Ok(())
 }
 
-fn process_bam(input_path: &Path, fp: &mut FastFingerprint, reference_file: Option<String>) -> Result<()> {
-    let mut reader = bam::Reader::from_path(input_path)
-        .context("Failed to open alignment file")?;
+fn process_bam(
+    input_path: &Path,
+    fp: &mut FastFingerprint,
+    reference_file: Option<String>,
+) -> Result<()> {
+    let mut reader = bam::Reader::from_path(input_path).context("Failed to open alignment file")?;
 
     if input_path.extension().map_or(false, |ext| ext == "cram") {
         if let Some(ref_path) = &reference_file {
-            reader.set_reference(&ref_path)
+            reader
+                .set_reference(&ref_path)
                 .context("Failed to set CRAM reference")?;
         }
     }
 
     let progress = ProgressBar::new_spinner();
-    progress.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.green} [{elapsed_precise}] Processed {human_count} records ({per_sec})")?
-    );
+    progress.set_style(ProgressStyle::default_spinner().template(
+        "{spinner:.green} [{elapsed_precise}] Processed {human_count} records ({per_sec})",
+    )?);
 
     progress.enable_steady_tick(std::time::Duration::from_secs(3));
     progress.set_message("Processing BAM/CRAM file");
 
-    // Create channels for streaming records with larger buffer
-    let (tx, rx) = crossbeam_channel::bounded(100_000);
-    let (result_tx, result_rx) = crossbeam_channel::bounded(100_000);
+    let (tx, rx) = crossbeam_channel::bounded(1000); // Reduced from 100_000
+    let (result_tx, result_rx) = crossbeam_channel::bounded(1000);
     let counter = Arc::new(AtomicU64::new(0));
     let counter_clone = counter.clone();
 
@@ -216,15 +262,12 @@ fn process_bam(input_path: &Path, fp: &mut FastFingerprint, reference_file: Opti
 
 fn process_fastq(input_path: &Path, fp: &mut FastFingerprint) -> Result<()> {
     let progress = ProgressBar::new_spinner();
-    progress.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.green} {msg}")?
-    );
+    progress.set_style(ProgressStyle::default_spinner().template("{spinner:.green} {msg}")?);
 
     progress.set_message("Processing FASTQ file...");
 
-    let reader = fastq::Reader::new(std::fs::File::open(input_path)
-        .context("Failed to open FASTQ file")?);
+    let reader =
+        fastq::Reader::new(std::fs::File::open(input_path).context("Failed to open FASTQ file")?);
 
     // Create channels for streaming records
     let (tx, rx) = crossbeam_channel::bounded(10_000);

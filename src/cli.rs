@@ -151,5 +151,9 @@ pub enum Commands {
         /// MinHash scaled factor
         #[arg(long, default_value = "1000")]
         scaled: usize,
+
+        /// Output file to save k-mer hashes
+        #[arg(short = 'o', long = "output")]
+        output_file: Option<String>,
     },
 }
