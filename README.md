@@ -120,61 +120,49 @@ When a GAM file is surjected back via `vg surject` to a linear BAM, the results 
 
 ```shell
 decodingus-tools fingerprint \
-  [-r <REFERENCE_FILE>] \
-  [-o <OUTPUT_FILE>]
-  [--ksize <K-MER_SIZE>] \
-  [--scaled <SCALED_FACTOR>] \
-  <INPUT_FILE>
+[-r <REFERENCE_FILE>] \
+[-o <OUTPUT_FILE>] \
+[-R  ] \
+[--ksize <K-MER_SIZE>] \
+[--scaled <SCALED_FACTOR>] \
+<INPUT_FILE>
 ```
-Generate a MinHash-based fingerprint for sequencing data files (BAM, CRAM, or FASTQ). The tool serves two main purposes:
-1. Generating a unique identifier (hash) for a sequence file
-2. Creating a k-mer sketch file that enables rapid similarity comparisons between samples
+#### Use Cases and Performance
 
-Options:
-- : Reference FASTA file (required for CRAM files) `-r, --reference <FILE>`
-- `-o, --output <FILE>`: Save k-mer hashes to file for further analysis
-- `--ksize <INT>`: K-mer size for MinHash sketching (default: 31)
-- `--scaled <INT>`: MinHash scaled factor (default: 1000)
+**Whole Genome Analysis:**
+- Processing Time: Several hours for 30x WGS (~90 billion bases)
+- Memory Usage: Scales with `--scaled` parameter
+- Best for: Population studies, sample identity
 
-The tool processes the input file in parallel using available CPU cores, providing progress updates every few seconds.
+**Y Chromosome Analysis:**
+- Processing Time: Minutes
+- Memory Usage: Minimal
+- Best for: Paternal lineage comparison, Y-haplogroup verification
 
-#### Performance Expectations
-For a typical 30x coverage human whole genome sequence:
-- Input size: ~90 billion bases to process
-- Processing time: Expect several hours depending on hardware
-- Memory usage: Varies with parameter `--scaled`
+**Mitochondrial DNA Analysis:**
+- Processing Time: Minutes
+- Memory Usage: Minimal
+- Best for: Maternal lineage comparison, MT-haplogroup verification
 
-While the final similarity comparisons between samples are fast, the initial k-mer processing is computationally intensive due to the volume of data. The tool uses parallel processing where possible, but the sheer number of k-mers in a human genome requires significant processing time.
-
-#### Use Cases
-
-**Unique Identification:**
-- Quick file integrity verification
-- Data provenance tracking
-- Identifying duplicate samples
-
-**Similarity Analysis:**
-When using the `-o` option, the tool saves k-mer hashes that can be used to calculate Jaccard similarity indices between samples. This enables:
-- Rapid sample relatedness assessment
-- Population clustering
-- Sample contamination detection
-- Family relationship verification
-
-#### Parameter Optimization Note
-The default parameters are being tuned for human genome-scale data. For human WGS data, you may need to adjust:
-- `--scaled`: Higher values (e.g., 10000) reduce memory usage but maintain statistical significance
-- `--ksize`: The k-mer size affects specificity vs. sensitivity
-
-*Note: Optimal parameters for human genome analysis are being determined through empirical testing. Check documentation for updates on recommended values.*
+#### Similarity Analysis
+The k-mer files enable quick Jaccard similarity calculations between samples:
+- Whole Genome: Overall sample relatedness
+- Y Chromosome: Paternal lineage relationships
+- Mitochondrial: Maternal lineage relationships
 
 #### K-mer File Format
 The output file contains:
 ```text
 #ksize=31
 #scaled=1000
+#region=<full|chrY|chrM>
 <hash1>
 <hash2>
 ```
+
+*Note: Parameter optimization for human genome analysis is ongoing. Current defaults may be adjusted based on empirical testing.*
+
+*Processing Tip: For whole genome analysis, consider running overnight. Region-specific analysis typically completes in minutes.*
 
 ### Configuration
 

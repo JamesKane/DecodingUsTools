@@ -16,10 +16,11 @@ struct FastFingerprint {
     hashes: HashSet<u64>,
     max_hash: u64,
     progress: ProgressBar,
+    region: Region,
 }
 
 impl FastFingerprint {
-    fn new(ksize: usize, scaled: usize) -> Self {
+    fn new(ksize: usize, scaled: usize, region: Region) -> Self {
         let max_hash = ((u64::MAX as f64) / scaled as f64) as u64;
         let progress = ProgressBar::new(0);
         progress.set_style(
@@ -34,6 +35,7 @@ impl FastFingerprint {
             hashes: HashSet::new(),
             max_hash,
             progress,
+            region,
         }
     }
 
@@ -125,6 +127,7 @@ impl FastFingerprint {
         // Write header with parameters
         writeln!(writer, "#ksize={}", self.ksize).context("Failed to write ksize")?;
         writeln!(writer, "#scaled={}", self.scaled).context("Failed to write scaled factor")?;
+        writeln!(writer, "#region={:?}", self.region).context("Failed to write region")?;
 
         // Write hashes one per line
         for &hash in &sorted_hashes {
@@ -142,6 +145,7 @@ impl FastFingerprint {
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use crate::cli::Region;
 
 pub fn run(
     input_file: String,
@@ -149,9 +153,10 @@ pub fn run(
     ksize: usize,
     scaled: usize,
     output_file: Option<String>,
+    region: Region,
 ) -> Result<()> {
     let input_path = PathBuf::from(&input_file);
-    let mut fp = FastFingerprint::new(ksize, scaled);
+    let mut fp = FastFingerprint::new(ksize, scaled, region);
 
     match input_path.extension().and_then(|ext| ext.to_str()) {
         Some("bam") | Some("cram") => process_bam(&input_path, &mut fp, reference_file)?,
@@ -182,7 +187,7 @@ fn process_bam(
     fp: &mut FastFingerprint,
     reference_file: Option<String>,
 ) -> Result<()> {
-    let mut reader = bam::Reader::from_path(input_path).context("Failed to open alignment file")?;
+    let mut reader = bam::IndexedReader::from_path(input_path).context("Failed to open alignment file")?;
 
     if input_path.extension().map_or(false, |ext| ext == "cram") {
         if let Some(ref_path) = &reference_file {
@@ -192,68 +197,98 @@ fn process_bam(
         }
     }
 
+    let target_chromosomes = fp.region.to_chromosome_names();
+
+    // If no specific region is requested, process everything
+    if target_chromosomes.is_empty() {
+        return process_all_regions(&mut reader, fp);
+    }
+
+    // Process each requested chromosome
+    for chr_name in target_chromosomes {
+        // Get chromosome ID and length from a fresh header reference
+        let tid = match reader.header().tid(chr_name.as_bytes()) {
+            Some(tid) => tid,
+            None => continue, // Skip if chromosome not found
+        };
+
+        let chr_len = match reader.header().target_len(tid) {
+            Some(len) => len,
+            None => continue, // Skip if no length information
+        };
+
+        // Set up region for fetching
+        match reader.fetch((tid, 0, chr_len)) {
+            Ok(_) => {
+                println!("Processing chromosome: {} (length: {})", chr_name, chr_len);
+                process_region(&mut reader, fp)?;
+            },
+            Err(e) => {
+                eprintln!(
+                    "Warning: Failed to fetch chromosome {}. Error: {}. Skipping.",
+                    chr_name, e
+                );
+                continue;
+            }
+        }
+    }
+
+    if fp.hashes.is_empty() {
+        return Err(anyhow::anyhow!(
+            "No valid sequences found in specified regions"
+        ));
+    }
+
+    Ok(())
+}
+
+fn process_region<R: bam::Read>(
+    reader: &mut R,
+    fp: &mut FastFingerprint,
+) -> Result<()> {
     let progress = ProgressBar::new_spinner();
     progress.set_style(ProgressStyle::default_spinner().template(
         "{spinner:.green} [{elapsed_precise}] Processed {human_count} records ({per_sec})",
     )?);
 
     progress.enable_steady_tick(std::time::Duration::from_secs(3));
-    progress.set_message("Processing BAM/CRAM file");
 
-    let (tx, rx) = crossbeam_channel::bounded(1000); // Reduced from 100_000
-    let (result_tx, result_rx) = crossbeam_channel::bounded(1000);
-    let counter = Arc::new(AtomicU64::new(0));
-    let counter_clone = counter.clone();
-
-    // Spawn thread to read records
-    std::thread::spawn(move || {
-        for record in reader.records() {
-            if let Ok(record) = record {
-                if tx.send(record).is_err() {
-                    break;
-                }
+    for r in reader.records() {
+        let record = r?;
+        if !record.is_unmapped() {
+            let seq = record.seq().as_bytes();
+            if seq.len() >= fp.ksize {
+                fp.add_sequence(&seq);
+                progress.inc(1);
             }
         }
-    });
-
-    // Spawn worker threads for processing
-    let num_workers = rayon::current_num_threads();
-    let rx = Arc::new(rx);
-    let mut workers = Vec::with_capacity(num_workers);
-
-    for _ in 0..num_workers {
-        let rx = rx.clone();
-        let result_tx = result_tx.clone();
-        let ksize = fp.ksize;
-
-        workers.push(std::thread::spawn(move || {
-            while let Ok(record) = rx.recv() {
-                if !record.is_unmapped() {
-                    let seq = record.seq().as_bytes();
-                    if seq.len() >= ksize {
-                        // Send processed sequences to result channel
-                        if result_tx.send(seq.to_vec()).is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-        }));
     }
 
-    // Spawn thread to close result sender when all workers are done
-    std::thread::spawn(move || {
-        for worker in workers {
-            let _ = worker.join();
-        }
-        // result_tx is dropped here, closing the channel
-    });
+    progress.finish_and_clear();
+    Ok(())
+}
 
-    // Process results as they arrive
-    while let Ok(seq) = result_rx.recv() {
-        fp.add_sequence(&seq);
-        counter_clone.fetch_add(1, Ordering::Relaxed);
-        progress.set_position(counter_clone.load(Ordering::Relaxed));
+fn process_all_regions<R: bam::Read>(
+    reader: &mut R,
+    fp: &mut FastFingerprint,
+) -> Result<()> {
+    let progress = ProgressBar::new_spinner();
+    progress.set_style(ProgressStyle::default_spinner().template(
+        "{spinner:.green} [{elapsed_precise}] Processed {human_count} records ({per_sec})",
+    )?);
+
+    progress.enable_steady_tick(std::time::Duration::from_secs(3));
+    progress.set_message("Processing entire BAM file");
+
+    for r in reader.records() {
+        let record = r?;
+        if !record.is_unmapped() {
+            let seq = record.seq().as_bytes();
+            if seq.len() >= fp.ksize {
+                fp.add_sequence(&seq);
+                progress.inc(1);
+            }
+        }
     }
 
     progress.finish_and_clear();

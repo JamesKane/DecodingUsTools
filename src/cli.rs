@@ -15,6 +15,16 @@ pub enum TreeProvider {
     DecodingUs,
 }
 
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum Region {
+    #[value(name = "full")]
+    Full,
+    #[value(name = "chrY")]
+    Ychr,
+    #[value(name = "chrM")]
+    Mtchr,
+}
+
 
 #[derive(Subcommand)]
 pub enum Commands {
@@ -155,5 +165,10 @@ pub enum Commands {
         /// Output file to save k-mer hashes
         #[arg(short = 'o', long = "output")]
         output_file: Option<String>,
+
+        /// Limit analysis to specific region (chrY, chrM, or full)
+        #[arg(short = 'R', long = "region", value_enum, default_value = "full")]
+        region: Region,
+
     },
 }

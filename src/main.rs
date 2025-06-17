@@ -95,14 +95,16 @@ fn main() -> Result<(), Box<dyn Error>> {
             reference_file,
             ksize,
             scaled,
-            output_file
+            output_file,
+            region
         } => {
             commands::fingerprint::run(
                 input_file,
                 reference_file,
                 ksize,
                 scaled,
-                output_file
+                output_file,
+                region
             )?;
         }
     }
