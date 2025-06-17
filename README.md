@@ -116,6 +116,28 @@ When a GAM file is surjected back via `vg surject` to a linear BAM, the results 
 - Removing the PanSN-spec prefix from the individual reads
 - Invoking samtools to sort the final result
 
+### Generate Sequence Fingerprint
+
+```shell
+decodingus-tools fingerprint \
+  [-r <REFERENCE_FILE>] \
+  [--ksize <K-MER_SIZE>] \
+  [--scaled <SCALED_FACTOR>] \
+  <INPUT_FILE>
+```
+Generate a unique MinHash-based fingerprint for sequencing data files (BAM, CRAM, or FASTQ). Useful for:
+- Quick sequence similarity comparison
+- Data provenance tracking
+- Identifying duplicate or related samples
+
+Options:
+- : Reference FASTA file (required for CRAM files) `-r, --reference <FILE>`
+- `--ksize <INT>`: K-mer size for MinHash sketching (default: 31)
+- `--scaled <INT>`: MinHash scaled factor (default: 1000)
+
+The tool processes the input file in parallel using available CPU cores, providing progress updates every few seconds.
+
+
 ### Configuration
 
 The tool supports configuration via a TOML file located at:
