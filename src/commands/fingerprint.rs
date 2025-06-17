@@ -154,8 +154,9 @@ fn process_bam(input_path: &Path, fp: &mut FastFingerprint, reference_file: Opti
     progress.enable_steady_tick(std::time::Duration::from_secs(3));
     progress.set_message("Processing BAM/CRAM file");
 
-    // Create channels for streaming records
-    let (tx, rx) = crossbeam_channel::bounded(10_000);
+    // Create channels for streaming records with larger buffer
+    let (tx, rx) = crossbeam_channel::bounded(100_000);
+    let (result_tx, result_rx) = crossbeam_channel::bounded(100_000);
     let counter = Arc::new(AtomicU64::new(0));
     let counter_clone = counter.clone();
 
@@ -170,14 +171,42 @@ fn process_bam(input_path: &Path, fp: &mut FastFingerprint, reference_file: Opti
         }
     });
 
-    // Process records as they arrive
-    for record in rx {
-        if !record.is_unmapped() {
-            let seq = record.seq().as_bytes();
-            if seq.len() >= fp.ksize {
-                fp.add_sequence(&seq);
+    // Spawn worker threads for processing
+    let num_workers = rayon::current_num_threads();
+    let rx = Arc::new(rx);
+    let mut workers = Vec::with_capacity(num_workers);
+
+    for _ in 0..num_workers {
+        let rx = rx.clone();
+        let result_tx = result_tx.clone();
+        let ksize = fp.ksize;
+
+        workers.push(std::thread::spawn(move || {
+            while let Ok(record) = rx.recv() {
+                if !record.is_unmapped() {
+                    let seq = record.seq().as_bytes();
+                    if seq.len() >= ksize {
+                        // Send processed sequences to result channel
+                        if result_tx.send(seq.to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                }
             }
+        }));
+    }
+
+    // Spawn thread to close result sender when all workers are done
+    std::thread::spawn(move || {
+        for worker in workers {
+            let _ = worker.join();
         }
+        // result_tx is dropped here, closing the channel
+    });
+
+    // Process results as they arrive
+    while let Ok(seq) = result_rx.recv() {
+        fp.add_sequence(&seq);
         counter_clone.fetch_add(1, Ordering::Relaxed);
         progress.set_position(counter_clone.load(Ordering::Relaxed));
     }
