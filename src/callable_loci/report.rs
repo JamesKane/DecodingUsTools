@@ -156,11 +156,8 @@ fn write_bam_stats_section(
     Ok(())
 }
 
-fn write_contig_analysis_section(
-    html: &mut String,
-    contigs: &[ContigAnalysis],
-) -> Result<(), Box<dyn Error>> {
-    html.push_str(r#"<section class='tabs' role='tablist'>"#);
+fn write_contig_analysis_section(html: &mut String, contigs: &[ContigAnalysis]) -> Result<(), Box<dyn Error>> {
+    html.push_str(r#"<div class="contig-analysis">"#);
 
     // Add the contig selector
     html.push_str(
@@ -171,7 +168,7 @@ fn write_contig_analysis_section(
     // Add options for each contig
     for (i, contig) in contigs.iter().enumerate() {
         html.push_str(&format!(
-            r#"<option value="{}" {}>{}</option>"#,
+            r#"<option value="panel-{}" {}>{}</option>"#,
             i,
             if i == 0 { "selected" } else { "" },
             contig.name
@@ -180,12 +177,16 @@ fn write_contig_analysis_section(
 
     html.push_str("</select></div>");
 
+    // Container for panels
+    html.push_str(r#"<div class="contig-panels">"#);
+
     // Add tab panels for each contig
     for (i, contig) in contigs.iter().enumerate() {
         write_contig_panel(html, contig, i)?;
     }
 
-    html.push_str("</section>");
+    html.push_str("</div></div>");
+
     Ok(())
 }
 
@@ -195,10 +196,9 @@ fn write_contig_panel(
     index: usize,
 ) -> Result<(), Box<dyn Error>> {
     html.push_str(&format!(
-        r#"<div class="tab-panel" role="tabpanel" id="panel-{}" aria-labelledby="tab-{}" aria-hidden="{}">"#,
+        r#"<div class="tab-panel {}" id="panel-{}">"#,
+        if index == 0 { "active" } else { "" },
         index,
-        index,
-        index != 0
     ));
 
     // Add contig statistics table

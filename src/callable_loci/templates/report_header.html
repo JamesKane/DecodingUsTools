@@ -30,39 +30,15 @@
             font-style: italic;
             font-size: 0.9em;
         }
-        .tabs {
-            margin-top: 1.25rem;
+        .contig-panels {
+            margin-top: 1rem;
         }
-        .tab-list {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.5rem;
-            margin-bottom: 1.25rem;
-            list-style: none;
-            padding: 0;
-        }
-        .tab-button {
-            padding: 0.625rem 1.25rem;
-            border: none;
-            background: var(--bg-light);
-            cursor: pointer;
-            border-radius: 0.25rem;
-            font-size: 1rem;
-        }
-        .tab-button:hover {
-            background: #e0e0e0;
-        }
-        .tab-button[aria-selected="true"] {
-            background: var(--primary-color);
-            color: white;
-        }
+
         .tab-panel {
             display: none;
-            padding: 1.25rem;
-            border: 1px solid var(--border-color);
-            border-radius: 0.5rem;
         }
-        .tab-panel[aria-hidden="false"] {
+
+        .tab-panel.active {
             display: block;
         }
         table {

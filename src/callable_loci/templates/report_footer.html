@@ -1,22 +1,27 @@
 <script>
-function switchToContig(index) {
-    // Hide all panels
-    document.querySelectorAll('[role="tabpanel"]').forEach(panel => {
-        panel.setAttribute('aria-hidden', 'true');
-    });
-    
-    // Show selected panel
-    const selectedPanel = document.getElementById('panel-' + index);
-    selectedPanel.setAttribute('aria-hidden', 'false');
-}
+    function switchToContig(panelId) {
+        // Hide all panels first
+        document.querySelectorAll('.tab-panel').forEach(panel => {
+            panel.style.display = 'none';
+            panel.classList.remove('active');
+        });
 
-// Initial setup
-document.addEventListener('DOMContentLoaded', () => {
-    const select = document.getElementById('contig-select');
-    if (select) {
-        switchToContig(select.value);
+        // Show and activate the selected panel
+        const selectedPanel = document.getElementById(panelId);
+        if (selectedPanel) {
+            selectedPanel.style.display = 'block';
+            selectedPanel.classList.add('active');
+        }
     }
-});
+
+    // Initial setup
+    document.addEventListener('DOMContentLoaded', () => {
+        const select = document.getElementById('contig-select');
+        if (select) {
+            switchToContig(select.value);
+        }
+    });
 </script>
+</main>
 </body>
 </html>
