@@ -107,7 +107,6 @@ impl FastFingerprint {
     }
 }
 
-use rayon::prelude::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
