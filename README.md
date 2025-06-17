@@ -138,6 +138,14 @@ Options:
 
 The tool processes the input file in parallel using available CPU cores, providing progress updates every few seconds.
 
+#### Performance Expectations
+For a typical 30x coverage human whole genome sequence:
+- Input size: ~90 billion bases to process
+- Processing time: Expect several hours depending on hardware
+- Memory usage: Varies with parameter `--scaled`
+
+While the final similarity comparisons between samples are fast, the initial k-mer processing is computationally intensive due to the volume of data. The tool uses parallel processing where possible, but the sheer number of k-mers in a human genome requires significant processing time.
+
 #### Use Cases
 
 **Unique Identification:**
