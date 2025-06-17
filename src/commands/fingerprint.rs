@@ -125,9 +125,9 @@ impl FastFingerprint {
         let mut writer = std::io::BufWriter::new(file);
 
         // Write header with parameters
-        writeln!(writer, "#ksize={}", self.ksize).context("Failed to write ksize")?;
-        writeln!(writer, "#scaled={}", self.scaled).context("Failed to write scaled factor")?;
-        writeln!(writer, "#region={:?}", self.region).context("Failed to write region")?;
+        writeln!(writer, "#ksize={}", self.ksize)?;
+        writeln!(writer, "#scaled={}", self.scaled)?;
+        writeln!(writer, "#region={}", self.region.to_output_name())?;
 
         // Write hashes one per line
         for &hash in &sorted_hashes {
@@ -197,101 +197,161 @@ fn process_bam(
         }
     }
 
+    let header = reader.header().clone();
     let target_chromosomes = fp.region.to_chromosome_names();
 
-    // If no specific region is requested, process everything
+    let progress = ProgressBar::new_spinner();
+    progress.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} [{elapsed_precise}] Processing {msg}")?
+    );
+    progress.enable_steady_tick(std::time::Duration::from_secs(5));
+
+    // If no specific region is requested (full genome), process all records
+    println!("Processing Sequences file... {:?}", target_chromosomes);
     if target_chromosomes.is_empty() {
-        return process_all_regions(&mut reader, fp);
+        progress.set_message("entire genome");
+
+        process_all_records(input_path, fp, &progress)?;
+
+        return Ok(());
     }
 
-    // Process each requested chromosome
+    // Process specific chromosomes
+    let mut found_any = false;
     for chr_name in target_chromosomes {
-        // Get chromosome ID and length from a fresh header reference
-        let tid = match reader.header().tid(chr_name.as_bytes()) {
-            Some(tid) => tid,
-            None => continue, // Skip if chromosome not found
-        };
-
-        let chr_len = match reader.header().target_len(tid) {
-            Some(len) => len,
-            None => continue, // Skip if no length information
-        };
-
-        // Set up region for fetching
-        match reader.fetch((tid, 0, chr_len)) {
-            Ok(_) => {
-                println!("Processing chromosome: {} (length: {})", chr_name, chr_len);
-                process_region(&mut reader, fp)?;
-            },
-            Err(e) => {
-                eprintln!(
-                    "Warning: Failed to fetch chromosome {}. Error: {}. Skipping.",
-                    chr_name, e
-                );
-                continue;
+        if let Some(tid) = header.tid(chr_name.as_bytes()) {
+            if let Some(chr_len) = header.target_len(tid) {
+                progress.set_message(format!("chromosome {}", chr_name));
+                match reader.fetch((tid, 0, chr_len)) {
+                    Ok(_) => {
+                        process_records(&mut reader, fp, &progress)?;
+                        found_any = true;
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: Failed to fetch {}. Error: {}. Skipping.",
+                            chr_name, e
+                        );
+                    }
+                }
             }
         }
     }
 
-    if fp.hashes.is_empty() {
+    if !found_any {
         return Err(anyhow::anyhow!(
             "No valid sequences found in specified regions"
         ));
     }
 
-    Ok(())
-}
-
-fn process_region<R: bam::Read>(
-    reader: &mut R,
-    fp: &mut FastFingerprint,
-) -> Result<()> {
-    let progress = ProgressBar::new_spinner();
-    progress.set_style(ProgressStyle::default_spinner().template(
-        "{spinner:.green} [{elapsed_precise}] Processed {human_count} records ({per_sec})",
-    )?);
-
-    progress.enable_steady_tick(std::time::Duration::from_secs(3));
-
-    for r in reader.records() {
-        let record = r?;
-        if !record.is_unmapped() {
-            let seq = record.seq().as_bytes();
-            if seq.len() >= fp.ksize {
-                fp.add_sequence(&seq);
-                progress.inc(1);
-            }
-        }
-    }
-
     progress.finish_and_clear();
     Ok(())
 }
 
-fn process_all_regions<R: bam::Read>(
+fn process_records<R: rust_htslib::bam::Read>(
     reader: &mut R,
     fp: &mut FastFingerprint,
+    progress: &ProgressBar,
+) -> Result<bool> {  // Changed return type to Result<bool>
+    let mut processed = 0;
+    let chunk_size = 10000; // Process records in chunks
+
+    let mut records = Vec::with_capacity(chunk_size);
+
+    loop {
+        records.clear();
+
+        // Collect a chunk of records
+        for _ in 0..chunk_size {
+            match reader.records().next() {
+                Some(Ok(record)) => {
+                    if !record.is_unmapped() {
+                        let seq = record.seq().as_bytes();
+                        if seq.len() >= fp.ksize {
+                            records.push(seq.to_vec());
+                        }
+                    }
+                },
+                Some(Err(e)) => eprintln!("Warning: Error reading record: {}", e),
+                None => break,
+            }
+        }
+
+        if records.is_empty() && processed == 0 {
+            break;
+        }
+
+        // Process the chunk
+        for seq in &records {
+            fp.add_sequence(seq);
+            processed += 1;
+            if processed % 1000 == 0 {
+                progress.set_position(processed);
+            }
+        }
+
+        if records.len() < chunk_size {
+            break;
+        }
+    }
+
+    Ok(processed > 0)  // Return true if we processed any records
+}
+
+fn process_all_records(
+    input_path: &Path,
+    fp: &mut FastFingerprint,
+    progress: &ProgressBar,
 ) -> Result<()> {
-    let progress = ProgressBar::new_spinner();
-    progress.set_style(ProgressStyle::default_spinner().template(
-        "{spinner:.green} [{elapsed_precise}] Processed {human_count} records ({per_sec})",
-    )?);
+    // Use regular Reader for full genome processing
+    let mut reader = bam::Reader::from_path(input_path)
+        .context("Failed to open BAM file")?;
 
-    progress.enable_steady_tick(std::time::Duration::from_secs(3));
-    progress.set_message("Processing entire BAM file");
+    let mut processed = 0;
+    let mut unmapped = 0;
+    let mut too_short = 0;
 
-    for r in reader.records() {
-        let record = r?;
-        if !record.is_unmapped() {
-            let seq = record.seq().as_bytes();
-            if seq.len() >= fp.ksize {
-                fp.add_sequence(&seq);
-                progress.inc(1);
+    println!("Starting full genome processing...");
+
+    let mut record = bam::Record::new();
+
+    while let Some(result) = reader.read(&mut record) {
+        match result {
+            Ok(()) => {
+                if record.is_unmapped() {
+                    unmapped += 1;
+                    continue;
+                }
+
+                let seq = record.seq().as_bytes();
+                if seq.len() >= fp.ksize {
+                    fp.add_sequence(&seq);
+                    processed += 1;
+
+                    if processed % 10000 == 0 {
+                        progress.set_message(format!("Processed {} sequences", processed));
+                        progress.set_position(processed as u64);
+                    }
+                } else {
+                    too_short += 1;
+                }
+            }
+            Err(e) => {
+                eprintln!("Warning: Error reading record: {}", e);
             }
         }
     }
 
-    progress.finish_and_clear();
+    println!("\nFinal statistics:");
+    println!("  Total sequences processed: {}", processed);
+    println!("  Unmapped records: {}", unmapped);
+    println!("  Too short sequences: {}", too_short);
+
+    if processed == 0 {
+        return Err(anyhow::anyhow!("No valid sequences were processed"));
+    }
+
     Ok(())
 }
 
