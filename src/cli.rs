@@ -134,4 +134,22 @@ pub enum Commands {
         #[arg(long)]
         keep_temp: bool,
     },
+
+    /// Generate a unique fingerprint for sequencing data files
+    Fingerprint {
+        /// Input BAM, CRAM, or FASTQ file
+        input_file: String,
+
+        /// Reference FASTA file (required for CRAM files)
+        #[arg(short = 'r', long = "reference")]
+        reference_file: Option<String>,
+
+        /// K-mer size for MinHash sketching
+        #[arg(long, default_value = "31")]
+        ksize: usize,
+
+        /// MinHash scaled factor
+        #[arg(long, default_value = "1000")]
+        scaled: usize,
+    },
 }

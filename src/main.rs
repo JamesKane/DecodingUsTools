@@ -90,6 +90,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .context("Failed to initialize BAM fixer")?;
             fixer.run()?;
         }
+        cli::Commands::Fingerprint {
+            input_file,
+            reference_file,
+            ksize,
+            scaled,
+        } => {
+            commands::fingerprint::run(
+                input_file,
+                reference_file,
+                ksize,
+                scaled,
+            )?;
+        }
     }
 
     Ok(())
