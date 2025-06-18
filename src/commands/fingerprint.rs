@@ -168,7 +168,6 @@ pub fn run(
         ),
     }
 
-
     if fp.hashes.is_empty() {
         anyhow::bail!("No valid sequences found in file");
     }
@@ -188,7 +187,8 @@ fn process_bam(
     fp: &mut FastFingerprint,
     reference_file: Option<String>,
 ) -> Result<()> {
-    let mut reader = bam::IndexedReader::from_path(input_path).context("Failed to open alignment file")?;
+    let mut reader =
+        bam::IndexedReader::from_path(input_path).context("Failed to open alignment file")?;
 
     if input_path.extension().map_or(false, |ext| ext == "cram") {
         if let Some(ref_path) = &reference_file {
@@ -204,7 +204,7 @@ fn process_bam(
     let progress = ProgressBar::new_spinner();
     progress.set_style(
         ProgressStyle::default_spinner()
-            .template("{spinner:.green} [{elapsed_precise}] Processing {msg}")?
+            .template("{spinner:.green} [{elapsed_precise}] Processing {msg}")?,
     );
     progress.enable_steady_tick(std::time::Duration::from_secs(5));
 
@@ -254,7 +254,8 @@ fn process_records<R: rust_htslib::bam::Read>(
     reader: &mut R,
     fp: &mut FastFingerprint,
     progress: &ProgressBar,
-) -> Result<bool> {  // Changed return type to Result<bool>
+) -> Result<bool> {
+    // Changed return type to Result<bool>
     let mut processed = 0;
     let chunk_size = 10000; // Process records in chunks
 
@@ -267,13 +268,11 @@ fn process_records<R: rust_htslib::bam::Read>(
         for _ in 0..chunk_size {
             match reader.records().next() {
                 Some(Ok(record)) => {
-                    if !record.is_unmapped() {
-                        let seq = record.seq().as_bytes();
-                        if seq.len() >= fp.ksize {
-                            records.push(seq.to_vec());
-                        }
+                    let seq = record.seq().as_bytes();
+                    if seq.len() >= fp.ksize {
+                        records.push(seq.to_vec());
                     }
-                },
+                }
                 Some(Err(e)) => eprintln!("Warning: Error reading record: {}", e),
                 None => break,
             }
@@ -297,7 +296,7 @@ fn process_records<R: rust_htslib::bam::Read>(
         }
     }
 
-    Ok(processed > 0)  // Return true if we processed any records
+    Ok(processed > 0) // Return true if we processed any records
 }
 
 fn process_all_records(
@@ -306,8 +305,7 @@ fn process_all_records(
     progress: &ProgressBar,
 ) -> Result<()> {
     // Use regular Reader for full genome processing
-    let mut reader = bam::Reader::from_path(input_path)
-        .context("Failed to open BAM file")?;
+    let mut reader = bam::Reader::from_path(input_path).context("Failed to open BAM file")?;
 
     let mut processed = 0;
     let mut unmapped = 0;
@@ -322,7 +320,6 @@ fn process_all_records(
             Ok(()) => {
                 if record.is_unmapped() {
                     unmapped += 1;
-                    continue;
                 }
 
                 let seq = record.seq().as_bytes();
@@ -381,7 +378,10 @@ fn process_fastq(input_path: &Path, fp: &mut FastFingerprint) -> Result<u64> {
                 processed_sequences += 1;
 
                 if processed_sequences % 1_000_000 == 0 {
-                    progress.set_message(format!("Processed {} million sequences", processed_sequences / 1_000_000));
+                    progress.set_message(format!(
+                        "Processed {} million sequences",
+                        processed_sequences / 1_000_000
+                    ));
                 }
             }
             Err(e) => {
@@ -390,11 +390,9 @@ fn process_fastq(input_path: &Path, fp: &mut FastFingerprint) -> Result<u64> {
         }
     }
 
-    progress.finish_with_message(format!("Finished processing {} sequences", processed_sequences));
+    progress.finish_with_message(format!(
+        "Finished processing {} sequences",
+        processed_sequences
+    ));
     Ok(processed_sequences)
 }
-
-
-
-
-
