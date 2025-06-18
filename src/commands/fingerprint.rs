@@ -5,8 +5,9 @@ use rust_htslib::{bam, bam::Read as BamRead};
 use seahash::SeaHasher;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+use std::fs::File;
 use std::hash::Hasher;
-use std::io::Write;
+use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
@@ -143,8 +144,6 @@ impl FastFingerprint {
     }
 }
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use crate::cli::Region;
 
 pub fn run(
@@ -161,12 +160,14 @@ pub fn run(
     match input_path.extension().and_then(|ext| ext.to_str()) {
         Some("bam") | Some("cram") => process_bam(&input_path, &mut fp, reference_file)?,
         Some(ext) if ext == "fastq" || ext == "fq" || ext == "gz" => {
-            process_fastq(&input_path, &mut fp)?
+            let count = process_fastq(&input_path, &mut fp)?;
+            println!("Processed {} valid sequences", count);
         }
         _ => anyhow::bail!(
             "Unsupported file format. Must be .fastq, .fq, .fastq.gz, .fq.gz, .bam, or .cram"
         ),
     }
+
 
     if fp.hashes.is_empty() {
         anyhow::bail!("No valid sequences found in file");
@@ -355,41 +356,45 @@ fn process_all_records(
     Ok(())
 }
 
-fn process_fastq(input_path: &Path, fp: &mut FastFingerprint) -> Result<()> {
+use niffler::get_reader;
+
+fn process_fastq(input_path: &Path, fp: &mut FastFingerprint) -> Result<u64> {
     let progress = ProgressBar::new_spinner();
     progress.set_style(ProgressStyle::default_spinner().template("{spinner:.green} {msg}")?);
-
     progress.set_message("Processing FASTQ file...");
 
-    let reader =
-        fastq::Reader::new(std::fs::File::open(input_path).context("Failed to open FASTQ file")?);
+    println!("Opening FASTQ file: {}", input_path.display());
 
-    // Create channels for streaming records
-    let (tx, rx) = crossbeam_channel::bounded(10_000);
-    let counter = Arc::new(AtomicU64::new(0));
-    let counter_clone = counter.clone();
+    let mut processed_sequences = 0u64;
+    println!("Starting FASTQ processing");
 
-    // Spawn thread to read records
-    std::thread::spawn(move || {
-        for record in reader.records() {
-            if let Ok(record) = record {
-                if tx.send(record).is_err() {
-                    break;
+    // Create boxed reader for niffler
+    let file = File::open(input_path)?;
+    let (reader, _compression) = get_reader(Box::new(file))?;
+    let reader = BufReader::new(reader);
+    let fastq_reader = fastq::Reader::new(reader);
+
+    for (i, record) in fastq_reader.records().enumerate() {
+        match record {
+            Ok(record) => {
+                fp.add_sequence(&record.seq());
+                processed_sequences += 1;
+
+                if processed_sequences % 1_000_000 == 0 {
+                    progress.set_message(format!("Processed {} million sequences", processed_sequences / 1_000_000));
                 }
             }
+            Err(e) => {
+                eprintln!("Warning: Error reading record at position {}: {}", i, e);
+            }
         }
-    });
-
-    // Process records as they arrive
-    for record in rx {
-        let seq = record.seq();
-        if seq.len() >= fp.ksize {
-            fp.add_sequence(seq);
-        }
-        counter_clone.fetch_add(1, Ordering::Relaxed);
-        progress.set_position(counter_clone.load(Ordering::Relaxed));
     }
 
-    progress.finish_and_clear();
-    Ok(())
+    progress.finish_with_message(format!("Finished processing {} sequences", processed_sequences));
+    Ok(processed_sequences)
 }
+
+
+
+
+
