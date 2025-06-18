@@ -79,6 +79,7 @@ pub mod readers {
     use std::io::BufReader;
     use std::path::Path;
     use std::thread;
+    use crate::utils::progress_bar_builder::ProgressBarBuilder;
 
     pub struct BamReader {
         reader: bam::Reader,
@@ -227,8 +228,18 @@ pub mod readers {
 
             drop(tx); // Close channel to signal workers to finish
 
+            // Progress bar for collecting worker results
+            let collect_progress = ProgressBarBuilder::new("Collecting worker results")
+                .with_template("{spinner:.green} [{elapsed_precise}] {msg}")
+                .with_tick()
+                .build()?;
+
+            let num_handles = handles.len();
+            collect_progress.set_length(num_handles as u64);
+
             // Collect results
-            for handle in handles {
+            for (idx, handle) in handles.into_iter().enumerate() {
+                collect_progress.set_message(format!("Collecting worker {} of {}", idx + 1, num_handles));
                 let (worker_processor, worker_stats) = handle.join().unwrap();
                 processors.push(worker_processor);
                 stats.processed += worker_stats.processed;
@@ -237,12 +248,26 @@ pub mod readers {
                 if stats.processed % 1000 == 0 {
                     processor.update_progress(&stats);
                 }
+                collect_progress.inc(1);
             }
+            collect_progress.finish_with_message(format!("Collected {} workers", processors.len()));
+
+            // Progress bar for merging results
+            let merge_progress = ProgressBarBuilder::new("Merging processors")
+                .with_template("{spinner:.green} [{elapsed_precise}] {msg}")
+                .with_tick()
+                .build()?;
+
+            merge_progress.set_length(processors.len() as u64);
 
             // Merge results from all processors
-            for worker_processor in processors {
-                processor.merge_processor(&worker_processor)?;
+            for (idx, worker_processor) in processors.iter().enumerate() {
+                merge_progress.set_message(format!("Merging processor {} of {}", idx + 1, processors.len()));
+                processor.merge_processor(worker_processor)?;
+                merge_progress.inc(1);
             }
+            merge_progress.finish_with_message(format!("Merged {} processors", processors.len()));
+
 
             Ok(stats)
         }
@@ -383,10 +408,20 @@ pub mod readers {
                 }
             }
 
-            // Merge results
-            for worker_processor in results {
-                processor.merge_processor(&worker_processor)?;
+            let merge_progress = ProgressBarBuilder::new("Merging worker results")
+                .with_template("{spinner:.green} [{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} workers merged")
+                .with_progress_bar()
+                .build()?;
+
+            merge_progress.set_length(results.len() as u64);
+
+            for (idx, worker_processor) in results.iter().enumerate() {
+                processor.merge_processor(worker_processor)?;
+                merge_progress.set_position((idx + 1) as u64);
             }
+
+            merge_progress.finish_with_message(format!("Merged {} workers", results.len()));
+
 
             Ok(stats)
         }
