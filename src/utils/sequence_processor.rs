@@ -252,8 +252,9 @@ pub mod readers {
         pub fn new(path: &Path) -> Result<Self> {
             let file = File::open(path)?;
             let (inner_reader, _compression) = get_reader(Box::new(file))?;
+            // Increase buffer size to 16MB
             Ok(Self {
-                reader: fastq::Reader::new(Box::new(BufReader::new(inner_reader))),
+                reader: fastq::Reader::new(Box::new(BufReader::with_capacity(16 * 1024 * 1024, inner_reader))),
             })
         }
     }
@@ -301,21 +302,27 @@ pub mod readers {
                 return self.read_sequences_single_thread(processor, progress);
             }
 
-            let (tx, rx) = bounded(num_threads * 2);
+            // Increase channel capacity - allow more sequences in flight
+            let (tx, rx) = bounded(num_threads * 10000);
             let mut handles = vec![];
 
             // Spawn worker threads
-            for _ in 0..num_threads {
+            for thread_id in 0..num_threads {
                 let rx = rx.clone();
                 let mut worker_processor = processor.clone();
+                let worker_progress = progress.clone();
+
                 let handle = thread::spawn(move || {
                     let mut local_stats = ProcessingStats::default();
                     while let Ok(sequence) = rx.recv() {
                         if let Err(e) = worker_processor.process_sequence(&sequence) {
-                            eprintln!("Error processing sequence: {}", e);
+                            eprintln!("Thread {}: Error processing sequence: {}", thread_id, e);
                             local_stats.errors += 1;
                         } else {
                             local_stats.processed += 1;
+                            if local_stats.processed % 10000 == 0 {
+                                worker_progress.inc(10000);
+                            }
                         }
                     }
                     (worker_processor, local_stats)
@@ -323,9 +330,10 @@ pub mod readers {
                 handles.push(handle);
             }
 
-            // Read and send sequences
+            // Read and send sequences with batching
             let mut record = fastq::Record::new();
             let mut stats = ProcessingStats::default();
+            let mut batch = Vec::with_capacity(1000);
 
             while let Ok(()) = self.reader.read(&mut record) {
                 if record.seq().len() >= processor.get_min_length() {
@@ -335,11 +343,24 @@ pub mod readers {
                         quality: Some(record.qual().to_vec()),
                         metadata: SequenceMetadata::default(),
                     };
-                    if let Err(_) = tx.send(sequence) {
-                        break; // Channel closed, workers have panicked
+                    batch.push(sequence);
+
+                    if batch.len() >= 1000 {
+                        for seq in batch.drain(..) {
+                            if tx.send(seq).is_err() {
+                                return Ok(stats); // Channel closed, workers have panicked
+                            }
+                        }
                     }
                 } else {
                     stats.too_short += 1;
+                }
+            }
+
+            // Send remaining sequences
+            for seq in batch {
+                if tx.send(seq).is_err() {
+                    break;
                 }
             }
 

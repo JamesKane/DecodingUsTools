@@ -172,14 +172,21 @@ pub fn run(
     let mut fp = FastFingerprint::new(ksize, scaled, region);
     let progress = ProgressBarBuilder::new("Processing").build()?;
 
+    // Get number of physical CPU cores (not logical/hyperthreaded)
+    let num_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+
+    eprintln!("Processing with {} threads", num_threads);
+
     let stats = match input_path.extension().and_then(|ext| ext.to_str()) {
         Some("bam") | Some("cram") => {
             let mut reader = BamReader::new(&input_path, reference_file.as_deref())?;
-            reader.read_sequences(&mut fp, &progress)?
+            reader.read_sequences_with_threads(&mut fp, &progress, num_threads)?
         }
         Some(ext) if ext == "fastq" || ext == "fq" || ext == "gz" => {
             let mut reader = FastqReader::new(&input_path)?;
-            reader.read_sequences(&mut fp, &progress)?
+            reader.read_sequences_with_threads(&mut fp, &progress, num_threads)?
         }
         _ => anyhow::bail!(
             "Unsupported file format. Must be .fastq, .fq, .fastq.gz, .fq.gz, .bam, or .cram"
