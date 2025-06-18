@@ -1,6 +1,9 @@
+use crate::cli::Region;
+use crate::utils::progress_bar_builder::ProgressBarBuilder;
 use anyhow::{Context, Result};
 use bio::io::fastq;
 use indicatif::{ProgressBar, ProgressStyle};
+use niffler::get_reader;
 use rust_htslib::{bam, bam::Read as BamRead};
 use seahash::SeaHasher;
 use sha2::{Digest, Sha256};
@@ -23,13 +26,14 @@ struct FastFingerprint {
 impl FastFingerprint {
     fn new(ksize: usize, scaled: usize, region: Region) -> Self {
         let max_hash = ((u64::MAX as f64) / scaled as f64) as u64;
-        let progress = ProgressBar::new(0);
-        progress.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] {msg} [{wide_bar}] {pos}/{len} ({per_sec})")
-                .unwrap()
-                .progress_chars("=>-")
-        );
+        let progress = ProgressBarBuilder::new("")
+            .with_template(
+                "{spinner:.green} [{elapsed_precise}] {msg} [{wide_bar}] {pos}/{len} ({per_sec})",
+            )
+            .with_progress_bar()
+            .build()
+            .unwrap();
+
         FastFingerprint {
             ksize,
             scaled,
@@ -90,13 +94,9 @@ impl FastFingerprint {
     }
 
     fn hexdigest(&self) -> String {
-        let progress = ProgressBar::new_spinner();
-        progress.set_style(
-            ProgressStyle::default_spinner()
-                .template("{spinner:.green} {msg}")
-                .unwrap(),
-        );
-        progress.set_message("Finalizing fingerprint...");
+        let progress = ProgressBarBuilder::new("Finalizing fingerprint...")
+            .build()
+            .unwrap();
 
         let mut hasher = Sha256::new();
 
@@ -115,9 +115,8 @@ impl FastFingerprint {
     }
 
     fn save_hashes(&self, output_path: &Path) -> Result<()> {
-        let progress = ProgressBar::new_spinner();
-        progress.set_style(ProgressStyle::default_spinner().template("{spinner:.green} {msg}")?);
-        progress.set_message("Saving k-mer hashes...");
+        let progress = ProgressBarBuilder::new("Saving k-mer hashes...")
+            .build()?;
 
         let mut sorted_hashes: Vec<_> = self.hashes.iter().collect();
         sorted_hashes.sort();
@@ -143,8 +142,6 @@ impl FastFingerprint {
         Ok(())
     }
 }
-
-use crate::cli::Region;
 
 pub fn run(
     input_file: String,
@@ -201,11 +198,10 @@ fn process_bam(
     let header = reader.header().clone();
     let target_chromosomes = fp.region.to_chromosome_names();
 
-    let progress = ProgressBar::new_spinner();
-    progress.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.green} [{elapsed_precise}] Processing {msg}")?,
-    );
+    let progress = ProgressBarBuilder::new("Processing")
+        .with_template("{spinner:.green} [{elapsed_precise}] Processing {msg}")
+        .with_tick()
+        .build()?;
     progress.enable_steady_tick(std::time::Duration::from_secs(5));
 
     // If no specific region is requested (full genome), process all records
@@ -250,7 +246,7 @@ fn process_bam(
     Ok(())
 }
 
-fn process_records<R: rust_htslib::bam::Read>(
+fn process_records<R: bam::Read>(
     reader: &mut R,
     fp: &mut FastFingerprint,
     progress: &ProgressBar,
@@ -353,12 +349,8 @@ fn process_all_records(
     Ok(())
 }
 
-use niffler::get_reader;
-
 fn process_fastq(input_path: &Path, fp: &mut FastFingerprint) -> Result<u64> {
-    let progress = ProgressBar::new_spinner();
-    progress.set_style(ProgressStyle::default_spinner().template("{spinner:.green} {msg}")?);
-    progress.set_message("Processing FASTQ file...");
+    let progress = ProgressBarBuilder::new("Processing FASTQ file...").build()?;
 
     println!("Opening FASTQ file: {}", input_path.display());
 
