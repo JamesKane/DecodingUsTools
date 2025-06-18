@@ -1,25 +1,25 @@
 use crate::cli::Region;
 use crate::utils::progress_bar_builder::ProgressBarBuilder;
+use crate::utils::sequence_processor::core::SequenceReader;
+use crate::utils::sequence_processor::core::{ProcessingStats, Sequence, SequenceProcessor};
+use crate::utils::sequence_processor::readers::{BamReader, FastqReader};
 use anyhow::{Context, Result};
-use bio::io::fastq;
-use indicatif::{ProgressBar, ProgressStyle};
-use niffler::get_reader;
-use rust_htslib::{bam, bam::Read as BamRead};
+use indicatif::ProgressBar;
 use seahash::SeaHasher;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::fs::File;
 use std::hash::Hasher;
-use std::io::{BufReader, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct FastFingerprint {
     ksize: usize,
     scaled: usize,
     hashes: HashSet<u64>,
     max_hash: u64,
-    progress: ProgressBar,
+    progress: Arc<ProgressBar>,
     region: Region,
 }
 
@@ -39,36 +39,12 @@ impl FastFingerprint {
             scaled,
             hashes: HashSet::new(),
             max_hash,
-            progress,
+            progress: Arc::new(progress),
             region,
         }
     }
 
-    fn add_sequence(&mut self, sequence: &[u8]) {
-        if sequence.len() < self.ksize {
-            return;
-        }
-
-        let num_kmers = sequence.len() - self.ksize + 1;
-        self.progress.inc(1);
-        self.progress
-            .set_message(format!("Processing {} bp sequence", sequence.len()));
-
-        for i in 0..num_kmers {
-            let kmer = &sequence[i..i + self.ksize];
-            if kmer.iter().any(|&b| b == b'N') {
-                continue;
-            }
-
-            let hash = self.hash_kmer(kmer);
-            if hash <= self.max_hash {
-                self.hashes.insert(hash);
-            }
-        }
-    }
-
     fn hash_kmer(&self, kmer: &[u8]) -> u64 {
-        // Ensure aligned memory access by copying to a new Vec
         let mut canonical = Vec::with_capacity(self.ksize);
         let rev_comp: Vec<u8> = kmer
             .iter()
@@ -115,8 +91,7 @@ impl FastFingerprint {
     }
 
     fn save_hashes(&self, output_path: &Path) -> Result<()> {
-        let progress = ProgressBarBuilder::new("Saving k-mer hashes...")
-            .build()?;
+        let progress = ProgressBarBuilder::new("Saving k-mer hashes...").build()?;
 
         let mut sorted_hashes: Vec<_> = self.hashes.iter().collect();
         sorted_hashes.sort();
@@ -124,12 +99,10 @@ impl FastFingerprint {
         let file = std::fs::File::create(output_path).context("Failed to create output file")?;
         let mut writer = std::io::BufWriter::new(file);
 
-        // Write header with parameters
         writeln!(writer, "#ksize={}", self.ksize)?;
         writeln!(writer, "#scaled={}", self.scaled)?;
         writeln!(writer, "#region={}", self.region.to_output_name())?;
 
-        // Write hashes one per line
         for &hash in &sorted_hashes {
             writeln!(writer, "{}", hash).context("Failed to write hash")?;
         }
@@ -139,6 +112,50 @@ impl FastFingerprint {
             self.hashes.len(),
             output_path.display()
         ));
+        Ok(())
+    }
+}
+
+impl SequenceProcessor for FastFingerprint {
+    fn process_sequence(&mut self, sequence: &Sequence) -> Result<()> {
+        if sequence.data.len() < self.ksize {
+            return Ok(());
+        }
+
+        let num_kmers = sequence.data.len() - self.ksize + 1;
+        self.progress.inc(1);
+        self.progress
+            .set_message(format!("Processing {} bp sequence", sequence.data.len()));
+
+        for i in 0..num_kmers {
+            let kmer = &sequence.data[i..i + self.ksize];
+            if kmer.iter().any(|&b| b == b'N') {
+                continue;
+            }
+
+            let hash = self.hash_kmer(kmer);
+            if hash <= self.max_hash {
+                self.hashes.insert(hash);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn get_min_length(&self) -> usize {
+        self.ksize
+    }
+
+    fn update_progress(&mut self, stats: &ProcessingStats) {
+        self.progress.set_position(stats.processed);
+    }
+    
+    fn supports_parallel(&self) -> bool {
+        true
+    }
+
+    fn merge_processor(&mut self, other: &Self) -> Result<()> {
+        self.hashes.extend(other.hashes.iter().copied());
         Ok(())
     }
 }
@@ -153,238 +170,32 @@ pub fn run(
 ) -> Result<()> {
     let input_path = PathBuf::from(&input_file);
     let mut fp = FastFingerprint::new(ksize, scaled, region);
+    let progress = ProgressBarBuilder::new("Processing").build()?;
 
-    match input_path.extension().and_then(|ext| ext.to_str()) {
-        Some("bam") | Some("cram") => process_bam(&input_path, &mut fp, reference_file)?,
+    let stats = match input_path.extension().and_then(|ext| ext.to_str()) {
+        Some("bam") | Some("cram") => {
+            let mut reader = BamReader::new(&input_path, reference_file.as_deref())?;
+            reader.read_sequences(&mut fp, &progress)?
+        }
         Some(ext) if ext == "fastq" || ext == "fq" || ext == "gz" => {
-            let count = process_fastq(&input_path, &mut fp)?;
-            println!("Processed {} valid sequences", count);
+            let mut reader = FastqReader::new(&input_path)?;
+            reader.read_sequences(&mut fp, &progress)?
         }
         _ => anyhow::bail!(
             "Unsupported file format. Must be .fastq, .fq, .fastq.gz, .fq.gz, .bam, or .cram"
         ),
-    }
+    };
 
     if fp.hashes.is_empty() {
         anyhow::bail!("No valid sequences found in file");
     }
 
+    println!("Processed {} sequences", stats.processed);
     println!("{}", fp.hexdigest());
 
-    // Save hashes if output file is specified
     if let Some(output_path) = output_file {
         fp.save_hashes(Path::new(&output_path))?;
     }
 
     Ok(())
-}
-
-fn process_bam(
-    input_path: &Path,
-    fp: &mut FastFingerprint,
-    reference_file: Option<String>,
-) -> Result<()> {
-    let mut reader =
-        bam::IndexedReader::from_path(input_path).context("Failed to open alignment file")?;
-
-    if input_path.extension().map_or(false, |ext| ext == "cram") {
-        if let Some(ref_path) = &reference_file {
-            reader
-                .set_reference(&ref_path)
-                .context("Failed to set CRAM reference")?;
-        }
-    }
-
-    let header = reader.header().clone();
-    let target_chromosomes = fp.region.to_chromosome_names();
-
-    let progress = ProgressBarBuilder::new("Processing")
-        .with_template("{spinner:.green} [{elapsed_precise}] Processing {msg}")
-        .with_tick()
-        .build()?;
-    progress.enable_steady_tick(std::time::Duration::from_secs(5));
-
-    // If no specific region is requested (full genome), process all records
-    println!("Processing Sequences file... {:?}", target_chromosomes);
-    if target_chromosomes.is_empty() {
-        progress.set_message("entire genome");
-
-        process_all_records(input_path, fp, &progress)?;
-
-        return Ok(());
-    }
-
-    // Process specific chromosomes
-    let mut found_any = false;
-    for chr_name in target_chromosomes {
-        if let Some(tid) = header.tid(chr_name.as_bytes()) {
-            if let Some(chr_len) = header.target_len(tid) {
-                progress.set_message(format!("chromosome {}", chr_name));
-                match reader.fetch((tid, 0, chr_len)) {
-                    Ok(_) => {
-                        process_records(&mut reader, fp, &progress)?;
-                        found_any = true;
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "Warning: Failed to fetch {}. Error: {}. Skipping.",
-                            chr_name, e
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    if !found_any {
-        return Err(anyhow::anyhow!(
-            "No valid sequences found in specified regions"
-        ));
-    }
-
-    progress.finish_and_clear();
-    Ok(())
-}
-
-fn process_records<R: bam::Read>(
-    reader: &mut R,
-    fp: &mut FastFingerprint,
-    progress: &ProgressBar,
-) -> Result<bool> {
-    // Changed return type to Result<bool>
-    let mut processed = 0;
-    let chunk_size = 10000; // Process records in chunks
-
-    let mut records = Vec::with_capacity(chunk_size);
-
-    loop {
-        records.clear();
-
-        // Collect a chunk of records
-        for _ in 0..chunk_size {
-            match reader.records().next() {
-                Some(Ok(record)) => {
-                    let seq = record.seq().as_bytes();
-                    if seq.len() >= fp.ksize {
-                        records.push(seq.to_vec());
-                    }
-                }
-                Some(Err(e)) => eprintln!("Warning: Error reading record: {}", e),
-                None => break,
-            }
-        }
-
-        if records.is_empty() && processed == 0 {
-            break;
-        }
-
-        // Process the chunk
-        for seq in &records {
-            fp.add_sequence(seq);
-            processed += 1;
-            if processed % 1000 == 0 {
-                progress.set_position(processed);
-            }
-        }
-
-        if records.len() < chunk_size {
-            break;
-        }
-    }
-
-    Ok(processed > 0) // Return true if we processed any records
-}
-
-fn process_all_records(
-    input_path: &Path,
-    fp: &mut FastFingerprint,
-    progress: &ProgressBar,
-) -> Result<()> {
-    // Use regular Reader for full genome processing
-    let mut reader = bam::Reader::from_path(input_path).context("Failed to open BAM file")?;
-
-    let mut processed = 0;
-    let mut unmapped = 0;
-    let mut too_short = 0;
-
-    println!("Starting full genome processing...");
-
-    let mut record = bam::Record::new();
-
-    while let Some(result) = reader.read(&mut record) {
-        match result {
-            Ok(()) => {
-                if record.is_unmapped() {
-                    unmapped += 1;
-                }
-
-                let seq = record.seq().as_bytes();
-                if seq.len() >= fp.ksize {
-                    fp.add_sequence(&seq);
-                    processed += 1;
-
-                    if processed % 10000 == 0 {
-                        progress.set_message(format!("Processed {} sequences", processed));
-                        progress.set_position(processed as u64);
-                    }
-                } else {
-                    too_short += 1;
-                }
-            }
-            Err(e) => {
-                eprintln!("Warning: Error reading record: {}", e);
-            }
-        }
-    }
-
-    println!("\nFinal statistics:");
-    println!("  Total sequences processed: {}", processed);
-    println!("  Unmapped records: {}", unmapped);
-    println!("  Too short sequences: {}", too_short);
-
-    if processed == 0 {
-        return Err(anyhow::anyhow!("No valid sequences were processed"));
-    }
-
-    Ok(())
-}
-
-fn process_fastq(input_path: &Path, fp: &mut FastFingerprint) -> Result<u64> {
-    let progress = ProgressBarBuilder::new("Processing FASTQ file...").build()?;
-
-    println!("Opening FASTQ file: {}", input_path.display());
-
-    let mut processed_sequences = 0u64;
-    println!("Starting FASTQ processing");
-
-    // Create boxed reader for niffler
-    let file = File::open(input_path)?;
-    let (reader, _compression) = get_reader(Box::new(file))?;
-    let reader = BufReader::new(reader);
-    let fastq_reader = fastq::Reader::new(reader);
-
-    for (i, record) in fastq_reader.records().enumerate() {
-        match record {
-            Ok(record) => {
-                fp.add_sequence(&record.seq());
-                processed_sequences += 1;
-
-                if processed_sequences % 1_000_000 == 0 {
-                    progress.set_message(format!(
-                        "Processed {} million sequences",
-                        processed_sequences / 1_000_000
-                    ));
-                }
-            }
-            Err(e) => {
-                eprintln!("Warning: Error reading record at position {}: {}", i, e);
-            }
-        }
-    }
-
-    progress.finish_with_message(format!(
-        "Finished processing {} sequences",
-        processed_sequences
-    ));
-    Ok(processed_sequences)
 }
