@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::hash::Hasher;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 struct FastFingerprint {
@@ -149,7 +149,7 @@ impl SequenceProcessor for FastFingerprint {
     fn update_progress(&mut self, stats: &ProcessingStats) {
         self.progress.set_position(stats.processed);
     }
-    
+
     fn supports_parallel(&self) -> bool {
         true
     }
@@ -175,7 +175,7 @@ pub fn run(
     let num_threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
-    
+
     let stats = match input_path.extension().and_then(|ext| ext.to_str()) {
         Some("bam") | Some("cram") => {
             let mut reader = BamReader::new(&input_path, reference_file.as_deref())?;
