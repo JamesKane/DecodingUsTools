@@ -67,6 +67,7 @@ pub mod core {
 
 pub mod readers {
     use super::core::*;
+    use crate::utils::progress_bar_builder::ProgressBarBuilder;
     use anyhow::Result;
     use bio::io::fastq;
     use bio::io::fastq::FastqRead;
@@ -79,7 +80,6 @@ pub mod readers {
     use std::io::BufReader;
     use std::path::Path;
     use std::thread;
-    use crate::utils::progress_bar_builder::ProgressBarBuilder;
 
     pub struct BamReader {
         reader: bam::Reader,
@@ -239,7 +239,11 @@ pub mod readers {
 
             // Collect results
             for (idx, handle) in handles.into_iter().enumerate() {
-                collect_progress.set_message(format!("Collecting worker {} of {}", idx + 1, num_handles));
+                collect_progress.set_message(format!(
+                    "Collecting worker {} of {}",
+                    idx + 1,
+                    num_handles
+                ));
                 let (worker_processor, worker_stats) = handle.join().unwrap();
                 processors.push(worker_processor);
                 stats.processed += worker_stats.processed;
@@ -262,12 +266,15 @@ pub mod readers {
 
             // Merge results from all processors
             for (idx, worker_processor) in processors.iter().enumerate() {
-                merge_progress.set_message(format!("Merging processor {} of {}", idx + 1, processors.len()));
+                merge_progress.set_message(format!(
+                    "Merging processor {} of {}",
+                    idx + 1,
+                    processors.len()
+                ));
                 processor.merge_processor(worker_processor)?;
                 merge_progress.inc(1);
             }
             merge_progress.finish_with_message(format!("Merged {} processors", processors.len()));
-
 
             Ok(stats)
         }
@@ -279,7 +286,10 @@ pub mod readers {
             let (inner_reader, _compression) = get_reader(Box::new(file))?;
             // Increase buffer size to 16MB
             Ok(Self {
-                reader: fastq::Reader::new(Box::new(BufReader::with_capacity(16 * 1024 * 1024, inner_reader))),
+                reader: fastq::Reader::new(Box::new(BufReader::with_capacity(
+                    16 * 1024 * 1024,
+                    inner_reader,
+                ))),
             })
         }
     }
@@ -393,8 +403,23 @@ pub mod readers {
             drop(tx);
 
             // Collect results
+            eprintln!("Processing complete. Starting collection phase...");
+            let collect_progress = ProgressBarBuilder::new("Collecting worker results")
+                .with_template("{spinner:.green} [{elapsed_precise}] {msg}")
+                .with_tick()
+                .build()?;
+
+            let num_handles = handles.len();
+            collect_progress.set_length(num_handles as u64);
             let mut results = Vec::new();
-            for handle in handles {
+
+            for (idx, handle) in handles.into_iter().enumerate() {
+                collect_progress.set_message(format!(
+                    "Collecting worker {} of {} ({} processed so far)",
+                    idx + 1,
+                    num_handles,
+                    stats.processed
+                ));
                 match handle.join() {
                     Ok((processor, local_stats)) => {
                         stats.processed += local_stats.processed;
@@ -406,22 +431,40 @@ pub mod readers {
                         stats.errors += 1;
                     }
                 }
+                collect_progress.inc(1);
             }
+            collect_progress.finish_with_message(format!(
+                "Collection complete - processed {} sequences",
+                stats.processed
+            ));
 
             let merge_progress = ProgressBarBuilder::new("Merging worker results")
-                .with_template("{spinner:.green} [{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} workers merged")
-                .with_progress_bar()
+                .with_template("{spinner:.green} [{elapsed_precise}] {msg}")
+                .with_tick()
                 .build()?;
 
             merge_progress.set_length(results.len() as u64);
+            eprintln!("Starting merge of {} worker results...", results.len());
 
             for (idx, worker_processor) in results.iter().enumerate() {
+                let start = std::time::Instant::now();
+                merge_progress.set_message(format!(
+                    "Merging worker {} of {}",
+                    idx + 1,
+                    results.len()
+                ));
                 processor.merge_processor(worker_processor)?;
-                merge_progress.set_position((idx + 1) as u64);
+                let duration = start.elapsed();
+                merge_progress.set_message(format!(
+                    "Merged worker {} of {} (took {:?})",
+                    idx + 1,
+                    results.len(),
+                    duration
+                ));
+                merge_progress.inc(1);
             }
 
             merge_progress.finish_with_message(format!("Merged {} workers", results.len()));
-
 
             Ok(stats)
         }
