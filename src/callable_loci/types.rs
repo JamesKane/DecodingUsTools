@@ -18,24 +18,6 @@ pub(crate) struct CoverageRange {
     pub(crate) state: CalledState,
 }
 
-impl CoverageRange {
-    pub(crate) fn new(pos: u32, state: CalledState) -> Self {
-        Self {
-            start: pos,
-            end: pos,
-            state,
-        }
-    }
-
-    pub(crate) fn can_merge(&self, pos: u32, state: CalledState) -> bool {
-        self.end + 1 == pos && self.state == state
-    }
-
-    pub(crate) fn extend(&mut self, pos: u32) {
-        self.end = pos;
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BamAnalysisReport {
     pub metadata: BamMetadata,
