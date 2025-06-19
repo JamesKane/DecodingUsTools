@@ -292,6 +292,118 @@ pub mod readers {
                 ))),
             })
         }
+
+        // Private helper methods that will support the main implementation
+        fn spawn_worker_threads<P: SequenceProcessor>(
+            num_threads: usize,
+            rx: &crossbeam_channel::Receiver<Sequence>,
+            processor: &P,
+            progress: &ProgressBar,
+        ) -> Vec<thread::JoinHandle<(P, ProcessingStats)>> {
+            let mut handles = vec![];
+
+            for thread_id in 0..num_threads {
+                let rx = rx.clone();  // Now we're cloning the reference which is fine
+                let mut worker_processor = processor.clone();
+                let worker_progress = progress.clone();
+
+                let handle = thread::spawn(move || {
+                    let mut local_stats = ProcessingStats::default();
+                    while let Ok(sequence) = rx.recv() {
+                        if let Err(e) = worker_processor.process_sequence(&sequence) {
+                            eprintln!("Thread {}: Error processing sequence: {}", thread_id, e);
+                            local_stats.errors += 1;
+                        } else {
+                            local_stats.processed += 1;
+                            if local_stats.processed % 10000 == 0 {
+                                worker_progress.inc(10000);
+                            }
+                        }
+                    }
+                    eprintln!("Worker {} finished", thread_id);
+                    (worker_processor, local_stats)
+                });
+                handles.push(handle);
+            }
+            handles
+        }
+
+        fn process_batch(
+            batch: &mut Vec<Sequence>,
+            tx: &crossbeam_channel::Sender<Sequence>,
+            record_count: u64,
+            read_progress: &ProgressBar,
+        ) -> Result<bool> {
+            for seq in batch.drain(..) {
+                if tx.send(seq).is_err() {
+                    read_progress.finish_and_clear();
+                    eprintln!("Channel send error after {} records", record_count);
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+
+        fn collect_worker_results<P: SequenceProcessor>(
+            handles: Vec<thread::JoinHandle<(P, ProcessingStats)>>,
+            stats: &mut ProcessingStats,
+            collect_progress: &ProgressBar,
+        ) -> Result<Vec<P>> {
+            let mut results = Vec::new();
+            let num_handles = handles.len();
+            collect_progress.set_length(num_handles as u64);
+
+            for (idx, handle) in handles.into_iter().enumerate() {
+                eprintln!("Waiting for worker thread {} of {}...", idx + 1, num_handles);
+                collect_progress.set_message(format!(
+                    "Collecting worker {} of {} ({} processed so far)",
+                    idx + 1, num_handles, stats.processed
+                ));
+
+                match handle.join() {
+                    Ok((processor, local_stats)) => {
+                        eprintln!("Worker {} completed with {} sequences processed",
+                                  idx + 1, local_stats.processed);
+                        stats.processed += local_stats.processed;
+                        stats.errors += local_stats.errors;
+                        results.push(processor);
+                    }
+                    Err(e) => {
+                        eprintln!("Worker thread {} panicked: {:?}", idx + 1, e);
+                        stats.errors += 1;
+                    }
+                }
+                collect_progress.inc(1);
+            }
+            collect_progress.finish_with_message(format!(
+                "Collection complete - processed {} sequences",
+                stats.processed
+            ));
+            Ok(results)
+        }
+
+        fn merge_worker_results<P: SequenceProcessor>(
+            results: &[P],
+            processor: &mut P,
+            merge_progress: &ProgressBar,
+        ) -> Result<()> {
+            merge_progress.set_length(results.len() as u64);
+
+            for (idx, worker_processor) in results.iter().enumerate() {
+                let start = std::time::Instant::now();
+                merge_progress.set_message(format!("Merging worker {} of {}", idx + 1, results.len()));
+                eprintln!("Starting merge of worker {} of {}", idx + 1, results.len());
+                processor.merge_processor(worker_processor)?;
+                let duration = start.elapsed();
+                eprintln!("Completed merge of worker {} in {:?}", idx + 1, duration);
+                merge_progress.set_message(format!("Merged worker {} of {} (took {:?})",
+                                                   idx + 1, results.len(), duration));
+                merge_progress.inc(1);
+            }
+
+            merge_progress.finish_with_message(format!("Merged {} workers", results.len()));
+            Ok(())
+        }
     }
 
     impl SequenceReader for FastqReader {
@@ -302,7 +414,6 @@ pub mod readers {
         ) -> Result<ProcessingStats> {
             let mut stats = ProcessingStats::default();
             let mut record = fastq::Record::new();
-            let mut i = 0;
 
             while let Ok(()) = self.reader.read(&mut record) {
                 if record.seq().len() >= processor.get_min_length() {
@@ -321,7 +432,6 @@ pub mod readers {
                 if stats.processed % 1000 == 0 {
                     processor.update_progress(&stats);
                 }
-                i += 1;
             }
 
             Ok(stats)
@@ -337,136 +447,69 @@ pub mod readers {
                 return self.read_sequences_single_thread(processor, progress);
             }
 
-            // Increase channel capacity - allow more sequences in flight
             let (tx, rx) = bounded(num_threads * 10000);
-            let mut handles = vec![];
+            let handles = Self::spawn_worker_threads(num_threads, &rx, processor, progress); // Pass reference to rx
+            drop(rx);
 
-            // Spawn worker threads
-            for thread_id in 0..num_threads {
-                let rx = rx.clone();
-                let mut worker_processor = processor.clone();
-                let worker_progress = progress.clone();
-
-                let handle = thread::spawn(move || {
-                    let mut local_stats = ProcessingStats::default();
-                    while let Ok(sequence) = rx.recv() {
-                        if let Err(e) = worker_processor.process_sequence(&sequence) {
-                            eprintln!("Thread {}: Error processing sequence: {}", thread_id, e);
-                            local_stats.errors += 1;
-                        } else {
-                            local_stats.processed += 1;
-                            if local_stats.processed % 10000 == 0 {
-                                worker_progress.inc(10000);
-                            }
-                        }
-                    }
-                    (worker_processor, local_stats)
-                });
-                handles.push(handle);
-            }
-
-            // Read and send sequences with batching
-            let mut record = fastq::Record::new();
             let mut stats = ProcessingStats::default();
             let mut batch = Vec::with_capacity(1000);
+            let mut record = fastq::Record::new();
+            let mut record_count = 0;
+
+            let read_progress = ProgressBarBuilder::new("Reading records")
+                .with_template("{spinner:.green} [{elapsed_precise}] {msg} [{bar:40.cyan/blue}] {pos}/{len} ({per_sec}/s)\r")
+                .with_tick()
+                .build()?;
+            read_progress.enable_steady_tick(std::time::Duration::from_secs(10));
 
             while let Ok(()) = self.reader.read(&mut record) {
+                record_count += 1;
+                if record_count % 100000 == 0 {
+                    read_progress.set_message(format!("Processing {} bp sequence", record.seq().len()));
+                    read_progress.set_position(record_count);
+                }
+
                 if record.seq().len() >= processor.get_min_length() {
-                    let sequence = Sequence {
+                    batch.push(Sequence {
                         data: record.seq().to_vec(),
                         id: Some(record.id().to_string()),
                         quality: Some(record.qual().to_vec()),
                         metadata: SequenceMetadata::default(),
-                    };
-                    batch.push(sequence);
+                    });
 
-                    if batch.len() >= 1000 {
-                        for seq in batch.drain(..) {
-                            if tx.send(seq).is_err() {
-                                return Ok(stats); // Channel closed, workers have panicked
-                            }
-                        }
+                    if batch.len() >= 1000 && !Self::process_batch(&mut batch, &tx, record_count, &read_progress)? {
+                        return Ok(stats);
                     }
                 } else {
                     stats.too_short += 1;
                 }
             }
 
-            // Send remaining sequences
-            for seq in batch {
-                if tx.send(seq).is_err() {
-                    break;
-                }
+            read_progress.finish_and_clear();
+
+            // Process remaining sequences
+            if !batch.is_empty() && !Self::process_batch(&mut batch, &tx, record_count, &read_progress)? {
+                return Ok(stats);
             }
 
-            // Close the channel
             drop(tx);
 
-            // Collect results
-            eprintln!("Processing complete. Starting collection phase...");
             let collect_progress = ProgressBarBuilder::new("Collecting worker results")
                 .with_template("{spinner:.green} [{elapsed_precise}] {msg}")
                 .with_tick()
                 .build()?;
 
-            let num_handles = handles.len();
-            collect_progress.set_length(num_handles as u64);
-            let mut results = Vec::new();
-
-            for (idx, handle) in handles.into_iter().enumerate() {
-                collect_progress.set_message(format!(
-                    "Collecting worker {} of {} ({} processed so far)",
-                    idx + 1,
-                    num_handles,
-                    stats.processed
-                ));
-                match handle.join() {
-                    Ok((processor, local_stats)) => {
-                        stats.processed += local_stats.processed;
-                        stats.errors += local_stats.errors;
-                        results.push(processor);
-                    }
-                    Err(e) => {
-                        eprintln!("Worker thread panicked: {:?}", e);
-                        stats.errors += 1;
-                    }
-                }
-                collect_progress.inc(1);
-            }
-            collect_progress.finish_with_message(format!(
-                "Collection complete - processed {} sequences",
-                stats.processed
-            ));
+            let results = Self::collect_worker_results(handles, &mut stats, &collect_progress)?;
 
             let merge_progress = ProgressBarBuilder::new("Merging worker results")
                 .with_template("{spinner:.green} [{elapsed_precise}] {msg}")
                 .with_tick()
                 .build()?;
 
-            merge_progress.set_length(results.len() as u64);
-            eprintln!("Starting merge of {} worker results...", results.len());
-
-            for (idx, worker_processor) in results.iter().enumerate() {
-                let start = std::time::Instant::now();
-                merge_progress.set_message(format!(
-                    "Merging worker {} of {}",
-                    idx + 1,
-                    results.len()
-                ));
-                processor.merge_processor(worker_processor)?;
-                let duration = start.elapsed();
-                merge_progress.set_message(format!(
-                    "Merged worker {} of {} (took {:?})",
-                    idx + 1,
-                    results.len(),
-                    duration
-                ));
-                merge_progress.inc(1);
-            }
-
-            merge_progress.finish_with_message(format!("Merged {} workers", results.len()));
+            Self::merge_worker_results(&results, processor, &merge_progress)?;
 
             Ok(stats)
         }
     }
 }
+
