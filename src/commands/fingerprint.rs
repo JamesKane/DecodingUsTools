@@ -151,7 +151,7 @@ impl SequenceProcessor for FastFingerprint {
     }
     
     fn supports_parallel(&self) -> bool {
-        true
+        false //true
     }
 
     fn merge_processor(&mut self, other: &Self) -> Result<()> {
