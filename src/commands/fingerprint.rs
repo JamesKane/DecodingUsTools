@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use indicatif::ProgressBar;
 use seahash::SeaHasher;
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::hash::Hasher;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -19,12 +19,13 @@ struct FastFingerprint {
     scaled: usize,
     hashes: HashMap<u64, u32>,
     max_hash: u64,
+    max_frequency: Option<u32>,
     progress: Arc<ProgressBar>,
     region: Region,
 }
 
 impl FastFingerprint {
-    fn new(ksize: usize, scaled: usize, region: Region) -> Self {
+    fn new(ksize: usize, scaled: usize, max_frequency: Option<u32>, region: Region) -> Self {
         let max_hash = ((u64::MAX as f64) / scaled as f64) as u64;
         let progress = ProgressBarBuilder::new("")
             .with_template(
@@ -39,6 +40,7 @@ impl FastFingerprint {
             scaled,
             hashes: HashMap::new(),
             max_hash,
+            max_frequency,
             progress: Arc::new(progress),
             region,
         }
@@ -76,12 +78,11 @@ impl FastFingerprint {
 
         let mut hasher = Sha256::new();
 
-        let mut sorted_entries: Vec<_> = self.hashes.iter().collect();
-        sorted_entries.sort_by_key(|&(hash, _)| hash);
+        let sorted_entries: Vec<_> = self.sorted_entries();
 
         for (hash, count) in sorted_entries {
             hasher.update(hash.to_le_bytes());
-            hasher.update(count.to_le_bytes());  // Include abundance in the hash
+            hasher.update(count.to_le_bytes());
         }
 
         progress.finish_with_message(format!(
@@ -94,8 +95,7 @@ impl FastFingerprint {
     fn save_hashes(&self, output_path: &Path) -> Result<()> {
         let progress = ProgressBarBuilder::new("Saving k-mer hashes...").build()?;
 
-        let mut sorted_entries: Vec<_> = self.hashes.iter().collect();
-        sorted_entries.sort_by_key(|&(hash, _)| hash);
+        let sorted_entries = self.sorted_entries();
 
         let file = std::fs::File::create(output_path).context("Failed to create output file")?;
         let mut writer = std::io::BufWriter::new(file);
@@ -103,6 +103,9 @@ impl FastFingerprint {
         writeln!(writer, "#ksize={}", self.ksize)?;
         writeln!(writer, "#scaled={}", self.scaled)?;
         writeln!(writer, "#region={}", self.region.to_output_name())?;
+        if let Some(max_freq) = self.max_frequency {
+            writeln!(writer, "#max_frequency={}", max_freq)?;
+        }
 
         for (&hash, &count) in &sorted_entries {
             writeln!(writer, "{}\t{}", hash, count).context("Failed to write hash and count")?;
@@ -110,10 +113,23 @@ impl FastFingerprint {
 
         progress.finish_with_message(format!(
             "Saved {} k-mer hashes with abundances to {}",
-            self.hashes.len(),
+            sorted_entries.len(),
             output_path.display()
         ));
         Ok(())
+    }
+
+    fn sorted_entries(&self) -> Vec<(&u64, &u32)> {
+        let mut sorted_entries: Vec<_> = self
+            .hashes
+            .iter()
+            .filter(|(_, &count)| {
+                self.max_frequency
+                    .map_or(true, |max_freq| count <= max_freq)
+            })
+            .collect();
+        sorted_entries.sort_by_key(|&(hash, _)| hash);
+        sorted_entries
     }
 }
 
@@ -168,11 +184,12 @@ pub fn run(
     reference_file: Option<String>,
     ksize: usize,
     scaled: usize,
+    max_frequency: Option<u32>,
     output_file: Option<String>,
     region: Region,
 ) -> Result<()> {
     let input_path = PathBuf::from(&input_file);
-    let mut fp = FastFingerprint::new(ksize, scaled, region);
+    let mut fp = FastFingerprint::new(ksize, scaled, max_frequency, region);
     let progress = ProgressBarBuilder::new("Processing").build()?;
 
     let num_threads = std::thread::available_parallelism()

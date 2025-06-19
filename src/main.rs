@@ -1,11 +1,11 @@
 mod bam_fixer;
+mod callable_loci;
 mod cli;
 mod commands;
 mod config;
 mod haplogroup;
 mod utils;
 mod vendor;
-mod callable_loci;
 
 use clap::Parser;
 
@@ -40,7 +40,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 max_low_mapq,
                 max_low_mapq_fraction,
             );
-            callable_loci::run(bam_file, reference_file, output_file, summary_file, options, contigs)?;
+            callable_loci::run(
+                bam_file,
+                reference_file,
+                output_file,
+                summary_file,
+                options,
+                contigs,
+            )?;
         }
         cli::Commands::FindYBranch {
             bam_file,
@@ -95,16 +102,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             reference_file,
             ksize,
             scaled,
+            max_frequency,
             output_file,
-            region
+            region,
         } => {
             commands::fingerprint::run(
                 input_file,
                 reference_file,
                 ksize,
                 scaled,
+                max_frequency,
                 output_file,
-                region
+                region,
             )?;
         }
     }

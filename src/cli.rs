@@ -25,7 +25,6 @@ pub enum Region {
     Mtchr,
 }
 
-
 #[derive(Subcommand)]
 pub enum Commands {
     /// Analyze BAM file coverage and callability
@@ -48,7 +47,7 @@ pub enum Commands {
         /// Limit analysis to specific contigs (can be specified multiple times)
         #[arg(short = 'L', long = "contig", action = clap::ArgAction::Append)]
         contigs: Option<Vec<String>>,
-        
+
         /// Minimum depth for callable regions
         #[arg(long, default_value = "4")]
         min_depth: u32,
@@ -101,7 +100,6 @@ pub enum Commands {
         show_snps: bool,
     },
 
-
     /// Find the closest MT-DNA branch for a sample
     FindMtBranch {
         /// Input BAM file
@@ -124,7 +122,6 @@ pub enum Commands {
         #[arg(long)]
         show_snps: bool,
     },
-
 
     /// Fix a BAM file that was surjected from vg surject
     FixSurjectedBam {
@@ -162,6 +159,10 @@ pub enum Commands {
         #[arg(long, default_value = "1000")]
         scaled: usize,
 
+        /// Maximum frequency for a k-mer to be included (default: no limit)
+        #[arg(long)]
+        max_frequency: Option<u32>,
+
         /// Output file to save k-mer hashes
         #[arg(short = 'o', long = "output")]
         output_file: Option<String>,
@@ -169,6 +170,5 @@ pub enum Commands {
         /// Limit analysis to specific region (chrY, chrM, or full)
         #[arg(short = 'R', long = "region", value_enum, default_value = "full")]
         region: Region,
-
     },
 }
