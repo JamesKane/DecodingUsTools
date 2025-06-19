@@ -380,18 +380,32 @@ pub mod readers {
                     match tx.try_send(seq.clone()) {
                         Ok(_) => {}
                         Err(crossbeam_channel::TrySendError::Full(_)) => {
-                            // Channel is full, wait briefly and retry
-                            std::thread::sleep(std::time::Duration::from_millis(10));
-                            if tx.send(seq.clone()).is_err() {
-                                read_progress.finish_and_clear();
-                                eprintln!("Channel send error after {} records", record_count);
-                                return Ok(false);
+                            eprintln!("Channel full at record {}. Active batch size: {}. Attempting retry...",
+                                      record_count, batch.len());
+
+                            // Try a few times with backoff before giving up
+                            for retry in 1..=3 {
+                                thread::sleep(std::time::Duration::from_millis(100 * retry));
+                                match tx.try_send(seq.clone()) {
+                                    Ok(_) => break,
+                                    Err(crossbeam_channel::TrySendError::Full(_)) if retry == 3 => {
+                                        read_progress.finish_and_clear();
+                                        return Err(anyhow::anyhow!(
+                        "Channel remained full after retries at record {}. Worker threads may be stuck.",
+                        record_count
+                    ));
+                                    }
+                                    _ => continue,
+                                }
                             }
                         }
-                        Err(_) => {
+                        Err(e) => {
                             read_progress.finish_and_clear();
-                            eprintln!("Channel send error after {} records", record_count);
-                            return Ok(false);
+                            return Err(anyhow::anyhow!(
+                                "Channel send error at record {}: {:?}",
+                                record_count,
+                                e
+                            ));
                         }
                     }
                 }
@@ -528,7 +542,6 @@ pub mod readers {
 
             let mut stats = ProcessingStats::default();
             let mut batch = Vec::with_capacity(1000);
-            let mut record = fastq::Record::new();
             let mut record_count: u64 = 0;
 
             // Create a progress bar for reading phase
@@ -541,58 +554,36 @@ pub mod readers {
 
             // Read and process sequences
             eprintln!("Starting sequence reading phase...");
-            loop {
-                match self.reader.read(&mut record) {
-                    Ok(()) => {
-                        record_count += 1;
-
-                        if record_count % 10000 == 0 {
-                            read_progress.set_message(format!(
-                                "Reading sequences ({} records processed)",
-                                record_count
-                            ));
-                        }
-
-                        if record.seq().len() >= processor.get_min_length() {
-                            batch.push(Sequence {
-                                data: record.seq().to_vec(),
-                                id: Some(record.id().to_string()),
-                                quality: Some(record.qual().to_vec()),
-                                metadata: SequenceMetadata::default(),
-                            });
-
-                            if batch.len() >= 1000 {
-                                // Process batch with timeout
-                                let timeout = std::time::Duration::from_secs(1);
-                                for seq in batch.drain(..) {
-                                    match tx.send_timeout(seq, timeout) {
-                                        Ok(_) => {}
-                                        Err(e) => {
-                                            eprintln!(
-                                                "Failed to send sequence after {} records: {}",
-                                                record_count, e
-                                            );
-                                            return Ok(stats);
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            stats.too_short += 1;
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Error reading record after {} records: {}", record_count, e);
-                        break;
-                    }
+            let mut record = fastq::Record::new();
+            while self.reader.read(&mut record).is_ok() {
+                if record.id().is_empty() {
+                    break; // End of file or invalid record
                 }
-            }
 
-            // Process any remaining sequences
-            for seq in batch.drain(..) {
-                if tx.send(seq).is_err() {
-                    eprintln!("Channel send error on final batch");
-                    break;
+                record_count += 1;
+
+                if record_count % 10000 == 0 {
+                    read_progress.set_message(format!(
+                        "Reading sequences ({} records processed)",
+                        record_count
+                    ));
+                }
+
+                if record.seq().len() >= processor.get_min_length() {
+                    batch.push(Sequence {
+                        data: record.seq().to_vec(),
+                        id: Some(record.id().to_string()),
+                        quality: Some(record.qual().to_vec()),
+                        metadata: SequenceMetadata::default(),
+                    });
+
+                    if batch.len() >= 1000 {
+                        if !Self::process_batch(&mut batch, &tx, record_count, &read_progress)? {
+                            return Ok(stats);
+                        }
+                    }
+                } else {
+                    stats.too_short += 1;
                 }
             }
 
