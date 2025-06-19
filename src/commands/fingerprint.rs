@@ -155,22 +155,7 @@ impl SequenceProcessor for FastFingerprint {
     }
 
     fn merge_processor(&mut self, other: &Self) -> Result<()> {
-        let merge_progress = ProgressBarBuilder::new("Merging hash sets")
-            .with_template("{spinner:.green} [{elapsed_precise}] Merging hashes: {msg}")
-            .build()?;
-
-        let pre_merge_size = self.hashes.len();
-        merge_progress.set_message(format!("{} existing hashes", pre_merge_size));
-
         self.hashes.extend(other.hashes.iter().copied());
-
-        let added = self.hashes.len() - pre_merge_size;
-        merge_progress.finish_with_message(format!(
-            "Added {} new unique hashes (total: {})",
-            added,
-            self.hashes.len()
-        ));
-
         Ok(())
     }
 }

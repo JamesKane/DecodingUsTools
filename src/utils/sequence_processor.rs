@@ -298,54 +298,22 @@ pub mod readers {
             num_threads: usize,
             rx: &crossbeam_channel::Receiver<Sequence>,
             processor: &P,
-            progress: &ProgressBar,
         ) -> Vec<thread::JoinHandle<(P, ProcessingStats)>> {
             let mut handles = vec![];
-            let progress_update_interval = 10000; // Update progress every 10k sequences
 
             for thread_id in 0..num_threads {
                 let rx = rx.clone();
                 let mut worker_processor = processor.clone();
-                let worker_progress = progress.clone();
 
                 let handle = thread::spawn(move || {
                     let mut local_stats = ProcessingStats::default();
-
-                    // Track processing rate
-                    let start_time = std::time::Instant::now();
-                    let mut last_update = start_time;
-
                     while let Ok(sequence) = rx.recv() {
                         if let Err(e) = worker_processor.process_sequence(&sequence) {
-                            eprintln!("Thread {}: Error processing sequence: {}", thread_id, e);
                             local_stats.errors += 1;
                         } else {
                             local_stats.processed += 1;
-
-                            // Update progress periodically
-                            if local_stats.processed % progress_update_interval == 0 {
-                                let now = std::time::Instant::now();
-                                let elapsed = now.duration_since(last_update);
-                                let rate = progress_update_interval as f64 / elapsed.as_secs_f64();
-
-                                worker_progress.set_message(format!(
-                                    "Worker {} | {} sequences ({:.0} seq/s)",
-                                    thread_id, local_stats.processed, rate
-                                ));
-
-                                last_update = now;
-                            }
                         }
                     }
-
-                    // Final progress update for this worker
-                    let total_time = start_time.elapsed();
-                    let overall_rate = local_stats.processed as f64 / total_time.as_secs_f64();
-                    eprintln!(
-                        "Worker {} finished: {} sequences processed ({:.0} seq/s average)",
-                        thread_id, local_stats.processed, overall_rate
-                    );
-
                     (worker_processor, local_stats)
                 });
                 handles.push(handle);
@@ -353,114 +321,34 @@ pub mod readers {
             handles
         }
 
-        fn thousands_separator(n: u64) -> String {
-            n.to_string()
-                .as_bytes()
-                .rchunks(3)
-                .rev()
-                .map(std::str::from_utf8)
-                .collect::<Result<Vec<&str>, _>>()
-                .unwrap()
-                .join(",")
-        }
-
         fn process_batch(
             batch: &mut Vec<Sequence>,
             tx: &crossbeam_channel::Sender<Sequence>,
             record_count: u64,
-            read_progress: &ProgressBar,
         ) -> Result<bool> {
-            // Update progress before starting batch processing
-            read_progress.set_message(format!("Processing batch at record {}", record_count));
-
-            // Send sequences in chunks to avoid excessive blocking
             const CHUNK_SIZE: usize = 100;
             for chunk in batch.drain(..).collect::<Vec<_>>().chunks(CHUNK_SIZE) {
                 for seq in chunk {
                     match tx.try_send(seq.clone()) {
                         Ok(_) => {}
                         Err(crossbeam_channel::TrySendError::Full(_)) => {
-                            eprintln!("Channel full at record {}. Active batch size: {}. Attempting retry...",
-                                      record_count, batch.len());
-
-                            // Try a few times with backoff before giving up
                             for retry in 1..=3 {
                                 thread::sleep(std::time::Duration::from_millis(100 * retry));
-                                match tx.try_send(seq.clone()) {
-                                    Ok(_) => break,
-                                    Err(crossbeam_channel::TrySendError::Full(_)) if retry == 3 => {
-                                        read_progress.finish_and_clear();
-                                        return Err(anyhow::anyhow!(
-                        "Channel remained full after retries at record {}. Worker threads may be stuck.",
-                        record_count
-                    ));
-                                    }
-                                    _ => continue,
+                                if tx.try_send(seq.clone()).is_ok() {
+                                    break;
+                                }
+                                if retry == 3 {
+                                    return Err(anyhow::anyhow!(
+                                "Channel remained full after retries. Worker threads may be stuck."
+                            ));
                                 }
                             }
                         }
-                        Err(e) => {
-                            read_progress.finish_and_clear();
-                            return Err(anyhow::anyhow!(
-                                "Channel send error at record {}: {:?}",
-                                record_count,
-                                e
-                            ));
-                        }
+                        Err(e) => return Err(anyhow::anyhow!("Channel send error: {:?}", e)),
                     }
                 }
-                // Update progress after each chunk
-                read_progress.set_message(format!("Processed {} sequences", record_count));
             }
-
             Ok(true)
-        }
-
-        fn collect_worker_results<P: SequenceProcessor>(
-            handles: Vec<thread::JoinHandle<(P, ProcessingStats)>>,
-            stats: &mut ProcessingStats,
-            collect_progress: &ProgressBar,
-        ) -> Result<Vec<P>> {
-            let mut results = Vec::new();
-            let num_handles = handles.len();
-            collect_progress.set_length(num_handles as u64);
-
-            for (idx, handle) in handles.into_iter().enumerate() {
-                eprintln!(
-                    "Waiting for worker thread {} of {}...",
-                    idx + 1,
-                    num_handles
-                );
-                collect_progress.set_message(format!(
-                    "Collecting worker {} of {} ({} processed so far)",
-                    idx + 1,
-                    num_handles,
-                    stats.processed
-                ));
-
-                match handle.join() {
-                    Ok((processor, local_stats)) => {
-                        eprintln!(
-                            "Worker {} completed with {} sequences processed",
-                            idx + 1,
-                            local_stats.processed
-                        );
-                        stats.processed += local_stats.processed;
-                        stats.errors += local_stats.errors;
-                        results.push(processor);
-                    }
-                    Err(e) => {
-                        eprintln!("Worker thread {} panicked: {:?}", idx + 1, e);
-                        stats.errors += 1;
-                    }
-                }
-                collect_progress.inc(1);
-            }
-            collect_progress.finish_with_message(format!(
-                "Collection complete - processed {} sequences",
-                stats.processed
-            ));
-            Ok(results)
         }
 
         fn merge_worker_results<P: SequenceProcessor>(
@@ -468,26 +356,8 @@ pub mod readers {
             processor: &mut P,
             merge_progress: &ProgressBar,
         ) -> Result<()> {
-            merge_progress.set_length(results.len() as u64);
-
-            for (idx, worker_processor) in results.iter().enumerate() {
-                let start = std::time::Instant::now();
-                merge_progress.set_message(format!(
-                    "Merging worker {} of {}",
-                    idx + 1,
-                    results.len()
-                ));
-                eprintln!("Starting merge of worker {} of {}", idx + 1, results.len());
+            for (_idx, worker_processor) in results.iter().enumerate() {
                 processor.merge_processor(worker_processor)?;
-                let duration = start.elapsed();
-                eprintln!("Completed merge of worker {} in {:?}", idx + 1, duration);
-                merge_progress.set_message(format!(
-                    "Merged worker {} of {} (took {:?})",
-                    idx + 1,
-                    results.len(),
-                    duration
-                ));
-                merge_progress.inc(1);
             }
 
             merge_progress.finish_with_message(format!("Merged {} workers", results.len()));
@@ -538,22 +408,14 @@ pub mod readers {
 
             // Use a smaller channel capacity to prevent memory issues
             let (tx, rx) = bounded(num_threads * 1000);
-            let handles = Self::spawn_worker_threads(num_threads, &rx, processor, progress);
+            let handles = Self::spawn_worker_threads(num_threads, &rx, processor);
 
             let mut stats = ProcessingStats::default();
             let mut batch = Vec::with_capacity(1000);
             let mut record_count: u64 = 0;
 
-            // Create a progress bar for reading phase
-            let read_progress = ProgressBarBuilder::new("Reading FASTQ")
-                .with_template(
-                    "{spinner:.green} [{elapsed_precise}] {msg} ({records} records processed)",
-                )
-                .with_tick()
-                .build()?;
-
-            // Read and process sequences
-            eprintln!("Starting sequence reading phase...");
+            progress.set_message("Reading sequences...");
+            
             let mut record = fastq::Record::new();
             while self.reader.read(&mut record).is_ok() {
                 if record.id().is_empty() {
@@ -563,10 +425,7 @@ pub mod readers {
                 record_count += 1;
 
                 if record_count % 10000 == 0 {
-                    read_progress.set_message(format!(
-                        "Reading sequences ({} records processed)",
-                        record_count
-                    ));
+                    progress.set_message(format!("Processing sequences ({} records)", record_count));
                 }
 
                 if record.seq().len() >= processor.get_min_length() {
@@ -578,7 +437,7 @@ pub mod readers {
                     });
 
                     if batch.len() >= 1000 {
-                        if !Self::process_batch(&mut batch, &tx, record_count, &read_progress)? {
+                        if !Self::process_batch(&mut batch, &tx, record_count)? {
                             return Ok(stats);
                         }
                     }
@@ -587,7 +446,7 @@ pub mod readers {
                 }
             }
 
-            read_progress.finish_with_message(format!(
+            progress.finish_with_message(format!(
                 "Read phase complete: processed {} sequences",
                 record_count
             ));
