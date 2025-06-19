@@ -130,17 +130,18 @@ decodingus-tools fingerprint \
 #### Use Cases and Performance
 
 **Whole Genome Analysis:**
-- Processing Time: Several hours for 30x WGS (~90 billion bases)
-- Memory Usage: Scales with `--scaled` parameter
-- Best for: Population studies, sample identity
+- Processing Time: 20-30 minutes for 30x WGS (~90 billion bases) on modern processors
+- Memory Usage: Scales with parameter and k-mer abundance `--scaled`
+- Best for: Population studies, sample identity, coverage analysis
+- Performance Note: Tested on AMD Ryzen 7900X
 
 **Y Chromosome Analysis:**
-- Processing Time: Minutes
+- Processing Time: 1-2 minutes
 - Memory Usage: Minimal
 - Best for: Paternal lineage comparison, Y-haplogroup verification
 
 **Mitochondrial DNA Analysis:**
-- Processing Time: Minutes
+- Processing Time: < 1 minute
 - Memory Usage: Minimal
 - Best for: Maternal lineage comparison, MT-haplogroup verification
 
@@ -152,12 +153,14 @@ The k-mer files enable quick Jaccard similarity calculations between samples:
 
 #### K-mer File Format
 The output file contains:
-```text
-#ksize=31
-#scaled=1000
+```text 
+#ksize=31 
+#scaled=1000 
 #region=<full|chrY|chrM>
-<hash1>
-<hash2>
+716259618	1
+2151318917	1
+3946307235	1
+7147799210	21
 ```
 
 *Note: Parameter optimization for human genome analysis is ongoing. Current defaults may be adjusted based on empirical testing.*
