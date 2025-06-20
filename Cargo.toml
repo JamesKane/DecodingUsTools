@@ -22,4 +22,9 @@ tempfile = "3.10.1"
 sha2 = "0.10"
 seahash = "4.1"
 niffler = "2.3"
+protobuf = "3.4"
+
+[build-dependencies]
+protobuf-codegen = "3.4"
+
 

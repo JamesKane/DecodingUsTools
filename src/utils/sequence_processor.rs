@@ -1,6 +1,7 @@
 pub mod core {
     use anyhow::Result;
     use indicatif::ProgressBar;
+    use crate::vg::gam::Alignment;
 
     #[derive(Debug, Clone)]
     pub struct Sequence {
@@ -80,6 +81,7 @@ pub mod readers {
     use std::io::BufReader;
     use std::path::Path;
     use std::thread;
+    use crate::vg::framing::GroupIterator;
 
     pub struct BamReader {
         reader: bam::Reader,
@@ -90,6 +92,10 @@ pub mod readers {
         reader: fastq::Reader<BufReader<Box<dyn std::io::Read>>>,
     }
 
+    pub struct GamReader {
+        reader: BufReader<Box<dyn std::io::Read>>,
+    }
+    
     impl BamReader {
         pub fn new(path: &Path, reference: Option<&str>) -> Result<Self> {
             let mut reader = bam::Reader::from_path(path)?;
@@ -513,4 +519,89 @@ pub mod readers {
             Ok(stats)
         }
     }
+
+    impl GamReader {
+        pub fn new(path: &Path) -> Result<Self> {
+            let file = File::open(path)?;
+            // Handle potential GZIP compression
+            let (inner_reader, _compression) = get_reader(Box::new(file))?;
+            let reader = BufReader::with_capacity(16 * 1024 * 1024, inner_reader);
+
+            Ok(Self { reader })
+        }
+    }
+
+    impl SequenceReader for GamReader {
+        fn read_sequences_single_thread<P: SequenceProcessor>(
+            &mut self,
+            processor: &mut P,
+            progress: &ProgressBar,
+        ) -> Result<ProcessingStats> {
+            let mut stats = ProcessingStats::default();
+
+            let group_iter = GroupIterator::new(&mut self.reader);
+
+            for group_result in group_iter {
+                let group = group_result?;
+
+                if group.type_tag.as_deref() != Some("GAM") {
+                    continue;
+                }
+
+                for msg_bytes in group.messages {
+                    match protobuf::Message::parse_from_bytes(&msg_bytes) {
+                        Ok(alignment) => {
+                            let alignment: crate::vg::gam::Alignment = alignment;
+                            // sequence is a String in the protobuf, convert it to bytes
+                            let seq_data = alignment.sequence.as_bytes();
+                            if seq_data.len() >= processor.get_min_length() {
+                                let sequence = Sequence {
+                                    data: seq_data.to_vec(),
+                                    id: Some(alignment.name.clone()),
+                                    quality: Some(alignment.quality.clone()),
+                                    metadata: SequenceMetadata {
+                                        is_mapped: alignment.read_mapped,
+                                        chromosome: Option::from(alignment.path.as_ref()
+                                            .map(|p| p.name.clone())
+                                            .unwrap_or_default()),
+                                        position: Some(alignment.query_position as u64),
+                                    },
+                                };
+
+                                if let Err(e) = processor.process_sequence(&sequence) {
+                                    eprintln!("Error processing sequence: {}", e);
+                                    stats.errors += 1;
+                                } else {
+                                    stats.processed += 1;
+                                }
+                            } else {
+                                stats.too_short += 1;
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Warning: Error parsing GAM record: {}", e);
+                            stats.errors += 1;
+                        }
+                    }
+
+                    if stats.processed % 1000 == 0 {
+                        processor.update_progress(&stats);
+                    }
+                }
+            }
+
+            Ok(stats)
+        }
+
+        fn read_sequences_with_threads<P: SequenceProcessor + Clone + 'static>(
+            &mut self,
+            _processor: &mut P,
+            _progress: &ProgressBar,
+            _num_threads: usize,
+        ) -> Result<ProcessingStats> {
+            Err(anyhow::anyhow!("Multi-threaded processing not yet implemented for GAM files"))
+        }
+
+    }
+
 }

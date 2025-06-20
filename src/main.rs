@@ -6,6 +6,8 @@ mod config;
 mod haplogroup;
 mod utils;
 mod vendor;
+mod vg;
+mod generated;
 
 use clap::Parser;
 
