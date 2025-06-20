@@ -127,6 +127,11 @@ decodingus-tools fingerprint \
 [--scaled <SCALED_FACTOR>] \
 <INPUT_FILE>
 ```
+#### The tool supports various input formats:
+- BAM/CRAM files (requires reference for CRAM)
+- FASTQ files (.fastq, .fq, optionally gzipped)
+- GAM files (Graph Alignment/Map format from vg)
+
 #### Use Cases and Performance
 
 **Whole Genome Analysis:**
