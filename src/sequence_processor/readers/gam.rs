@@ -1,4 +1,5 @@
 use crate::sequence_processor::core::*;
+use crate::sequence_processor::threading::{merge_processors, ThreadPool};
 use crate::vg::framing::GroupIterator;
 use anyhow::Result;
 use indicatif::ProgressBar;
@@ -6,7 +7,6 @@ use niffler::get_reader;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
-use crate::sequence_processor::threading::{merge_processors, ThreadPool};
 
 pub struct GamReader {
     reader: BufReader<Box<dyn std::io::Read>>,
@@ -32,6 +32,14 @@ impl SequenceReader for GamReader {
         let mut group_iter = GroupIterator::new(&mut self.reader);
         let mut last_error_was_buffer = false;
 
+        progress.set_style(
+            indicatif::ProgressStyle::default_bar()
+                .template("{spinner:.green} [{elapsed_precise}] {pos} alignments processed ({per_sec})")
+                .unwrap()
+        );
+
+        progress.enable_steady_tick(std::time::Duration::from_secs(1));
+
         while let Some(group_result) = group_iter.next() {
             let group = match group_result {
                 Ok(g) => {
@@ -39,10 +47,9 @@ impl SequenceReader for GamReader {
                     g
                 }
                 Err(e) => {
-                    // If we get a buffer fill error and we've already seen one,
-                    // assume we've hit EOF and break
                     if e.to_string().contains("failed to fill whole buffer") {
                         if last_error_was_buffer {
+                            eprintln!("Double buffer error, assuming EOF");
                             break;
                         }
                         last_error_was_buffer = true;
@@ -55,10 +62,15 @@ impl SequenceReader for GamReader {
                 }
             };
 
-            // Skip non-GAM groups
             if group.type_tag.as_deref() != Some("GAM") {
+                eprintln!("Skipping non-GAM group: {:?}", group.type_tag);
                 continue;
             }
+
+            eprintln!(
+                "Processing GAM group with {} messages",
+                group.messages.len()
+            );
 
             for msg_bytes in group.messages {
                 match protobuf::Message::parse_from_bytes(&msg_bytes) {
@@ -86,6 +98,10 @@ impl SequenceReader for GamReader {
                                 stats.errors += 1;
                             } else {
                                 stats.processed += 1;
+                                if stats.processed % 100 == 0 {
+                                    //eprintln!("Processed {} sequences", stats.processed);
+                                    processor.update_progress(&stats);
+                                }
                             }
                         } else {
                             stats.too_short += 1;
@@ -96,16 +112,11 @@ impl SequenceReader for GamReader {
                         stats.errors += 1;
                     }
                 }
-
-                if stats.processed % 1000 == 0 {
-                    processor.update_progress(&stats);
-                }
             }
         }
 
-        // Ensure we update the progress one final time at the end
+        eprintln!("Finished processing. Stats: {:?}", stats);
         processor.update_progress(&stats);
-
         Ok(stats)
     }
 
@@ -163,9 +174,13 @@ impl SequenceReader for GamReader {
                                 quality: Some(alignment.quality.clone()),
                                 metadata: SequenceMetadata {
                                     is_mapped: alignment.read_mapped,
-                                    chromosome: Option::from(alignment.path.as_ref()
-                                        .map(|p| p.name.clone())
-                                        .unwrap_or_default()),
+                                    chromosome: Option::from(
+                                        alignment
+                                            .path
+                                            .as_ref()
+                                            .map(|p| p.name.clone())
+                                            .unwrap_or_default(),
+                                    ),
                                     position: Some(alignment.query_position as u64),
                                     mapping_quality: Some(alignment.mapping_quality as u8),
                                 },

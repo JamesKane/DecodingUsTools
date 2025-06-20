@@ -9,6 +9,7 @@ mod vendor;
 mod vg;
 mod generated;
 pub mod sequence_processor;
+mod graph_coverage;
 
 use clap::Parser;
 
@@ -119,6 +120,20 @@ fn main() -> Result<(), Box<dyn Error>> {
                 region,
             )?;
         }
+        cli::Commands::GraphCoverage {
+            input,
+            min_mapping_quality,
+            min_coverage,
+            output,
+        } => {
+            commands::graph_coverage::run(
+                input.clone(),
+                min_mapping_quality,
+                min_coverage,
+                output.clone(),
+            )?;
+        }
+
     }
 
     Ok(())

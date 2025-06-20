@@ -171,4 +171,19 @@ pub enum Commands {
         #[arg(short = 'R', long = "region", value_enum, default_value = "full")]
         region: Region,
     },
+
+    /// Analyze graph coverage from GAM files
+    GraphCoverage {
+        /// Input GAM file
+        input: String,
+        /// Minimum mapping quality threshold
+        #[arg(short = 'q', long, default_value_t = 20)]
+        min_mapping_quality: u8,
+        /// Minimum coverage threshold
+        #[arg(short = 'c', long, default_value_t = 1)]
+        min_coverage: u32,
+        /// Output JSON file for detailed coverage statistics
+        #[arg(short, long)]
+        output: Option<String>,
+    },
 }
