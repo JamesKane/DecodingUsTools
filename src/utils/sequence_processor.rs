@@ -1,7 +1,6 @@
 pub mod core {
     use anyhow::Result;
     use indicatif::ProgressBar;
-    use crate::vg::gam::Alignment;
 
     #[derive(Debug, Clone)]
     pub struct Sequence {

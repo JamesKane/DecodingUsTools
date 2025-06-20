@@ -6,7 +6,6 @@
 //! can optionally be a type tag string.
 
 use anyhow::{anyhow, Result};
-use protobuf::Message;
 use std::io::{Read, BufRead};
 
 /// Reads a varint64 from a reader

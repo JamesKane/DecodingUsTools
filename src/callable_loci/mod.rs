@@ -17,7 +17,6 @@ use rust_htslib::bam::Read;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
-use std::io::Write;
 
 pub fn run(
     bam_file: String,

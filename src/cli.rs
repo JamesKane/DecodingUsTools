@@ -144,7 +144,7 @@ pub enum Commands {
 
     /// Generate a unique fingerprint for sequencing data files
     Fingerprint {
-        /// Input BAM, CRAM, or FASTQ file
+        /// Input file (BAM, GAM, or FASTQ format)
         input_file: String,
 
         /// Reference FASTA file (required for CRAM files)

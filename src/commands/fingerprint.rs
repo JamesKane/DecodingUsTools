@@ -2,7 +2,7 @@ use crate::cli::Region;
 use crate::utils::progress_bar_builder::ProgressBarBuilder;
 use crate::utils::sequence_processor::core::SequenceReader;
 use crate::utils::sequence_processor::core::{ProcessingStats, Sequence, SequenceProcessor};
-use crate::utils::sequence_processor::readers::{BamReader, FastqReader};
+use crate::utils::sequence_processor::readers::{BamReader, FastqReader, GamReader};
 use anyhow::{Context, Result};
 use indicatif::ProgressBar;
 use seahash::SeaHasher;
@@ -200,6 +200,10 @@ pub fn run(
         Some("bam") | Some("cram") => {
             let mut reader = BamReader::new(&input_path, reference_file.as_deref())?;
             reader.read_sequences_with_threads(&mut fp, &progress, num_threads)?
+        }
+        Some("gam") => {
+            let mut reader = GamReader::new(&input_path)?;
+            reader.read_sequences_single_thread(&mut fp, &progress)?
         }
         Some(ext) if ext == "fastq" || ext == "fq" || ext == "gz" => {
             let mut reader = FastqReader::new(&input_path)?;
