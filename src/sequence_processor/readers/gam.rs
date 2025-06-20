@@ -29,13 +29,27 @@ impl SequenceReader for GamReader {
     ) -> Result<ProcessingStats> {
         let mut stats = ProcessingStats::default();
         let mut group_iter = GroupIterator::new(&mut self.reader);
+        let mut last_error_was_buffer = false;
 
         while let Some(group_result) = group_iter.next() {
             let group = match group_result {
-                Ok(g) => g,
+                Ok(g) => {
+                    last_error_was_buffer = false;
+                    g
+                }
                 Err(e) => {
-                    eprintln!("Warning: Error reading GAM group: {}", e);
-                    stats.errors += 1;
+                    // If we get a buffer fill error and we've already seen one,
+                    // assume we've hit EOF and break
+                    if e.to_string().contains("failed to fill whole buffer") {
+                        if last_error_was_buffer {
+                            break;
+                        }
+                        last_error_was_buffer = true;
+                    } else {
+                        eprintln!("Warning: Error reading GAM group: {}", e);
+                        stats.errors += 1;
+                        last_error_was_buffer = false;
+                    }
                     continue;
                 }
             };
@@ -87,6 +101,9 @@ impl SequenceReader for GamReader {
                 }
             }
         }
+
+        // Ensure we update the progress one final time at the end
+        processor.update_progress(&stats);
 
         Ok(stats)
     }
