@@ -1,6 +1,6 @@
 use crate::cli::Region;
 use crate::sequence_processor::core::SequenceReader;
-use crate::sequence_processor::collectors::fingerprint::processor::FastFingerprint;  // Updated path
+use crate::sequence_processor::collectors::fingerprint::processor::FastFingerprint;
 use crate::sequence_processor::readers::{BamReader, FastqReader, GamReader};
 use crate::utils::progress_bar_builder::ProgressBarBuilder;
 use anyhow::Result;
@@ -30,7 +30,7 @@ pub fn run(
         }
         Some("gam") => {
             let mut reader = GamReader::new(&input_path)?;
-            reader.read_sequences_single_thread(&mut fp, &progress)?
+            reader.read_sequences_with_threads(&mut fp, &progress, num_threads)?
         }
         Some(ext) if ext == "fastq" || ext == "fq" || ext == "gz" => {
             let mut reader = FastqReader::new(&input_path)?;
@@ -42,7 +42,7 @@ pub fn run(
     };
 
     println!("Processed {} sequences", stats.processed);
-    println!("{}", fp.get_hexdigest()); // Changed from direct field access to method call
+    println!("{}", fp.get_hexdigest());
 
     if let Some(output_path) = output_file {
         fp.save_hashes(Path::new(&output_path))?;

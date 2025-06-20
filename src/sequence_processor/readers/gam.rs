@@ -6,6 +6,7 @@ use niffler::get_reader;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
+use crate::sequence_processor::threading::{merge_processors, ThreadPool};
 
 pub struct GamReader {
     reader: BufReader<Box<dyn std::io::Read>>,
@@ -112,9 +113,83 @@ impl SequenceReader for GamReader {
         &mut self,
         processor: &mut P,
         progress: &ProgressBar,
-        _num_threads: usize,
+        num_threads: usize,
     ) -> Result<ProcessingStats> {
-        // GAM reader doesn't support multi-threading yet
-        self.read_sequences_single_thread(processor, progress)
+        if num_threads <= 1 || !processor.supports_parallel() {
+            return self.read_sequences_single_thread(processor, progress);
+        }
+
+        let pool = ThreadPool::new(processor.clone(), num_threads)?;
+        let mut stats = ProcessingStats::default();
+        let mut group_iter = GroupIterator::new(&mut self.reader);
+        let mut last_error_was_buffer = false;
+
+        while let Some(group_result) = group_iter.next() {
+            let group = match group_result {
+                Ok(g) => {
+                    last_error_was_buffer = false;
+                    g
+                }
+                Err(e) => {
+                    if e.to_string().contains("failed to fill whole buffer") {
+                        if last_error_was_buffer {
+                            break;
+                        }
+                        last_error_was_buffer = true;
+                    } else {
+                        eprintln!("Warning: Error reading GAM group: {}", e);
+                        stats.errors += 1;
+                        last_error_was_buffer = false;
+                    }
+                    continue;
+                }
+            };
+
+            // Skip non-GAM groups
+            if group.type_tag.as_deref() != Some("GAM") {
+                continue;
+            }
+
+            for msg_bytes in group.messages {
+                match protobuf::Message::parse_from_bytes(&msg_bytes) {
+                    Ok(alignment) => {
+                        let alignment: crate::vg::gam::Alignment = alignment;
+                        let seq_data = alignment.sequence.as_bytes();
+
+                        if seq_data.len() >= processor.get_min_length() {
+                            let sequence = Sequence {
+                                data: seq_data.to_vec(),
+                                id: Some(alignment.name.clone()),
+                                quality: Some(alignment.quality.clone()),
+                                metadata: SequenceMetadata {
+                                    is_mapped: alignment.read_mapped,
+                                    chromosome: Option::from(alignment.path.as_ref()
+                                        .map(|p| p.name.clone())
+                                        .unwrap_or_default()),
+                                    position: Some(alignment.query_position as u64),
+                                    mapping_quality: Some(alignment.mapping_quality as u8),
+                                },
+                            };
+
+                            pool.send(sequence)?;
+                        } else {
+                            stats.too_short += 1;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Error parsing GAM record: {}", e);
+                        stats.errors += 1;
+                    }
+                }
+            }
+        }
+
+        let (thread_stats, processors) = pool.finish()?;
+        stats.processed += thread_stats.processed;
+        stats.errors += thread_stats.errors;
+
+        merge_processors(processors, processor)?;
+
+        Ok(stats)
     }
 }
