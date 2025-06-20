@@ -1,4 +1,4 @@
-use crate::utils::sequence_processor::core::*;
+use crate::sequence_processor::core::*;
 use crate::vg::framing::GroupIterator;
 use anyhow::Result;
 use indicatif::ProgressBar;
@@ -62,6 +62,7 @@ impl SequenceReader for GamReader {
                                         .map(|p| p.name.clone())
                                         .unwrap_or_default()),
                                     position: Some(alignment.query_position as u64),
+                                    mapping_quality: Some(alignment.mapping_quality as u8),
                                 },
                             };
 

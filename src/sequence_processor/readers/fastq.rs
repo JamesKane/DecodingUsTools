@@ -1,4 +1,4 @@
-use crate::utils::sequence_processor::{core::*, threading::*};
+use crate::sequence_processor::{core::*, threading::*};
 use anyhow::Result;
 use bio::io::fastq::{self, FastqRead};
 use indicatif::ProgressBar;

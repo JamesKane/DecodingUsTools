@@ -1,4 +1,4 @@
-use crate::utils::sequence_processor::{core::*, threading::*};
+use crate::sequence_processor::{core::*, threading::*};
 use anyhow::Result;
 use indicatif::ProgressBar;
 use rust_htslib::bam::{self, Read};
@@ -25,10 +25,13 @@ impl BamReader {
 
     fn create_sequence_from_record(&self, record: &bam::Record) -> Sequence {
         let seq = record.seq().as_bytes();
+        let qual = record.qual().to_vec();
+        let read_name = String::from_utf8_lossy(record.qname()).into_owned();
+
         Sequence {
             data: seq.to_vec(),
-            id: None,
-            quality: None,
+            id: Some(read_name),
+            quality: Some(qual),
             metadata: SequenceMetadata {
                 is_mapped: !record.is_unmapped(),
                 chromosome: if record.tid() >= 0 {
@@ -38,6 +41,7 @@ impl BamReader {
                     None
                 },
                 position: Some(record.pos() as u64),
+                mapping_quality: Some(record.mapq()),
             },
         }
     }
