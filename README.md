@@ -132,45 +132,36 @@ decodingus-tools fingerprint \
 - FASTQ files (.fastq, .fq, optionally gzipped)
 - GAM files (Graph Alignment/Map format from vg)
 
-#### Use Cases and Performance
+### Optimized MinHash Variant for Sequence Fingerprinting
+This fingerprinting method utilizes a performance-enhanced variant of the MinHash algorithm, designed to efficiently identify the original source library of sequencing reads processed through downstream pipelines. While effective for certain applications, its use is context-dependent and is best suited for specific scenarios.
+#### Key Use Cases:
+- **Source Library Identification**: Ideal for determining whether raw sequencing reads originated from the same source library, even if they were processed using different alignment tools or references.
+- **Pipeline Validation**: Enables cross-comparisons of sequencing data processed via diverse downstream bioinformatics workflows, providing insights into pipeline consistency.
 
-**Whole Genome Analysis:**
-- Processing Time: 20-30 minutes for 30x WGS (~90 billion bases) on modern processors
-- Memory Usage: Scales with parameter and k-mer abundance `--scaled`
-- Best for: Population studies, sample identity, coverage analysis
-- Performance Note: Tested on AMD Ryzen 7900X
+#### Limitations:
+- **Impact of Wet Lab and Sequencer Variability**: When sequencing reads are generated using different instrumentation (e.g., sequencing platforms) or wet lab protocols (e.g., library prep kits), Jaccard similarity scores between datasets from the same donor can appear as distant as those from completely unrelated individuals.
+- **Population and Family Genetics**: This method is not designed to reliably identify individual donors, familial relationships, or relatedness in population genomics for human-sized genomes, due to the loss of subtle genetic variations in the fingerprinting process.
 
-**Y Chromosome Analysis:**
-- Processing Time: 1-2 minutes
-- Memory Usage: Minimal
-- Best for: Paternal lineage comparison, Y-haplogroup verification
+#### Jaccard Similarity Context:
+- **Effective Use Cases**: Jaccard similarity scores are meaningful when comparing fingerprints derived from the same raw sequencing datasets, such as raw FASTQ files or aligned outputs from varying pipelines (e.g., different alignment tools or genome references).
+- **Observed Failure Scenarios**: Similarity calculations fail when datasets are derived using differing sequencing technologies or library preparation methods, with results resembling comparisons between unrelated samples rather than same-origin datasets. This behavior is inherent to MinHash-based algorithms and is not unique to this implementation.
 
-**Mitochondrial DNA Analysis:**
-- Processing Time: < 1 minute
-- Memory Usage: Minimal
-- Best for: Maternal lineage comparison, MT-haplogroup verification
+Notably, a similar behavior is observed in tools like **sourmash**, which is frequently used in the literature for assessing relatedness in human samples. Therefore, this is a characteristic of the algorithm itself, rather than a limitation of this particular implementation.
+#### Performance Characteristics:
+This implementation strikes a balance between speed and resource efficiency:
+- **Whole Genome Fingerprinting**: Processes 30x WGS datasets (~90 billion bases) in ~20–30 minutes on modern processors.
+- **Region-Specific Analysis** (e.g., Y Chromosome or Mitochondrial DNA): Completes in under 2 minutes with minimal memory usage.
 
-#### Similarity Analysis
-The k-mer files enable quick Jaccard similarity calculations between samples:
-- Whole Genome: Overall sample relatedness
-- Y Chromosome: Paternal lineage relationships
-- Mitochondrial: Maternal lineage relationships
+#### Output and Interpretation:
+- **Similarity Analysis**: Produces compact k-mer files that allow rapid Jaccard similarity comparisons between datasets, provided the datasets share the same raw source or aligned set of reads. Users must interpret results cautiously when fingerprints are generated using different sequencing methods or workflows.
+- **File Format**: Includes metadata (k-mer size, scaling factor, and region specificity) to ensure output reproducibility.
 
-#### K-mer File Format
-The output file contains:
-```text 
-#ksize=31 
-#scaled=1000 
-#region=<full|chrY|chrM>
-716259618	1
-2151318917	1
-3946307235	1
-7147799210	21
-```
+#### Practical Considerations:
+- **Parameter Tuning**: Adjust k-mer size (`--ksize`) and scaling (`--scaled`) based on genome size and research focus. Larger datasets may benefit from fine-tuning these parameters for improved performance.
+- **Raw Dataset Comparability**: This method works best when applied to fingerprints derived from the same set of source reads, even if processed differently downstream.
+- **Runtime Efficiency**: While whole-genome analysis may take longer and require overnight processing for batch comparisons, region-specific analyses (e.g., specific chromosomes) typically complete within minutes.
 
-*Note: Parameter optimization for human genome analysis is ongoing. Current defaults may be adjusted based on empirical testing.*
-
-*Processing Tip: For whole genome analysis, consider running overnight. Region-specific analysis typically completes in minutes.*
+This MinHash-based implementation is especially suited for identifying and validating sequencing library origins across bioinformatics pipelines. Its behavior in defining sample similarity mirrors that of other tools like **sourmash** and should be considered inherent to the algorithm itself rather than a tool-specific limitation. Users should employ this method with care, particularly in contexts involving diverse wet lab preparations or sequencing technologies.
 
 ### Configuration
 
