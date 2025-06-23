@@ -144,8 +144,8 @@ This fingerprinting method utilizes a performance-enhanced variant of the MinHas
 
 #### Jaccard Similarity Context:
 - **Effective Use Cases**: Jaccard similarity scores are meaningful when comparing fingerprints derived from the same raw sequencing datasets, such as raw FASTQ files or aligned outputs from varying pipelines (e.g., different alignment tools or genome references).
-- **Observed Failure Scenarios**: Similarity calculations fail when datasets are derived using differing sequencing technologies or library preparation methods, with results resembling comparisons between unrelated samples rather than same-origin datasets. This behavior is inherent to MinHash-based algorithms and is not unique to this implementation.
-
+- **Observed Failure Scenarios**: Similarity calculations fail when datasets are derived using differing sequencing technologies or library preparation methods, with results resembling comparisons between unrelated samples rather than same-origin datasets.
+ 
 Notably, a similar behavior is observed in tools like **sourmash**, which is frequently used in the literature for assessing relatedness in human samples. Therefore, this is a characteristic of the algorithm itself, rather than a limitation of this particular implementation.
 #### Performance Characteristics:
 This implementation strikes a balance between speed and resource efficiency:
@@ -160,8 +160,6 @@ This implementation strikes a balance between speed and resource efficiency:
 - **Parameter Tuning**: Adjust k-mer size (`--ksize`) and scaling (`--scaled`) based on genome size and research focus. Larger datasets may benefit from fine-tuning these parameters for improved performance.
 - **Raw Dataset Comparability**: This method works best when applied to fingerprints derived from the same set of source reads, even if processed differently downstream.
 - **Runtime Efficiency**: While whole-genome analysis may take longer and require overnight processing for batch comparisons, region-specific analyses (e.g., specific chromosomes) typically complete within minutes.
-
-This MinHash-based implementation is especially suited for identifying and validating sequencing library origins across bioinformatics pipelines. Its behavior in defining sample similarity mirrors that of other tools like **sourmash** and should be considered inherent to the algorithm itself rather than a tool-specific limitation. Users should employ this method with care, particularly in contexts involving diverse wet lab preparations or sequencing technologies.
 
 ### Configuration
 
