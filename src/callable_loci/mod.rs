@@ -5,18 +5,16 @@ mod types;
 mod utils;
 
 use crate::callable_loci::types::CalledState;
-use bio::io::fasta::IndexedReader;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 pub use options::CallableOptions;
 use profilers::{
     bam_stats::BamStats, callable_profiler::CallableProfiler, contig_profiler::ContigProfiler,
 };
-use rust_htslib::bam;
 use rust_htslib::bam::HeaderView;
 use rust_htslib::bam::Read;
+use rust_htslib::{bam, faidx};
 use std::collections::HashMap;
 use std::error::Error;
-use std::fs::File;
 
 pub fn run(
     bam_file: String,
@@ -49,25 +47,8 @@ pub fn run(
     let mut bam = bam::IndexedReader::from_path(&bam_file)?;
     let header = bam.header().clone();
 
-    // Check if reference file has .gz or .bgz extension
-    let is_compressed = reference_file.ends_with(".gz") || reference_file.ends_with(".bgz");
-
-    // Verify the FASTA index exists (for both compressed and uncompressed)
-    let fai_path = if is_compressed {
-        format!("{}.fai", reference_file)
-    } else {
-        format!("{}.fai", reference_file)
-    };
-
-    if !std::path::Path::new(&fai_path).exists() {
-        return Err(format!(
-            "Reference FASTA index not found at {}. Please run 'samtools faidx {}' first",
-            fai_path, reference_file
-        )
-            .into());
-    }
-
-    let mut fasta = IndexedReader::from_file(&reference_file)?;
+    // Use rust_htslib faidx which natively supports bgzipped FASTA
+    let mut fasta = faidx::Reader::from_path(&reference_file)?;
 
     let (multi_progress, main_progress) = setup_progress_bars();
     let mut contig_stats = initialize_contig_stats(&header, &options, &multi_progress)?;
@@ -200,7 +181,7 @@ fn process_position(pileup: &bam::pileup::Pileup, options: &CallableOptions) -> 
 
 fn process_contigs(
     bam: &mut bam::IndexedReader,
-    fasta: &mut IndexedReader<File>,
+    fasta: &mut faidx::Reader,
     header: &bam::HeaderView,
     counter: &mut CallableProfiler,
     contig_stats: &mut HashMap<usize, ContigProfiler>,
@@ -221,7 +202,7 @@ fn process_contigs(
 
 fn process_single_contig(
     bam: &mut bam::IndexedReader,
-    fasta: &mut IndexedReader<File>,
+    fasta: &mut faidx::Reader,
     header: &bam::HeaderView,
     counter: &mut CallableProfiler,
     contig_stats: &mut HashMap<usize, ContigProfiler>,
@@ -254,10 +235,8 @@ fn process_single_contig(
                 stats.progress_bar.set_position(current_pos as u64);
             }
 
-            let mut seq = Vec::new();
-            fasta.fetch(contig, current_pos as u64, (current_pos + 1) as u64)?;
-            fasta.read(&mut seq)?;
-            let ref_base = seq.first().map(|&b| b).unwrap_or(b'N');
+            let seq = fasta.fetch_seq(contig, current_pos as usize, current_pos as usize)?;
+            let ref_base = seq.first().copied().unwrap_or(b'N');
 
             counter.process_position(
                 contig,
@@ -277,10 +256,8 @@ fn process_single_contig(
             stats.progress_bar.set_position(pos as u64);
         }
 
-        let mut seq = Vec::new();
-        fasta.fetch(contig, pos as u64, (pos + 1) as u64)?;
-        fasta.read(&mut seq)?;
-        let ref_base = seq.first().map(|&b| b).unwrap_or(b'N');
+        let seq = fasta.fetch_seq(contig, pos as usize, pos as usize)?;
+        let ref_base = seq.first().copied().unwrap_or(b'N');
 
         let (raw_depth, qc_depth, low_mapq_count) = process_position(&pileup, options);
 
@@ -307,10 +284,8 @@ fn process_single_contig(
             stats.progress_bar.set_position(current_pos as u64);
         }
 
-        let mut seq = Vec::new();
-        fasta.fetch(contig, current_pos as u64, (current_pos + 1) as u64)?;
-        fasta.read(&mut seq)?;
-        let ref_base = seq.first().map(|&b| b).unwrap_or(b'N');
+        let seq = fasta.fetch_seq(contig, current_pos as usize, current_pos as usize)?;
+        let ref_base = seq.first().copied().unwrap_or(b'N');
 
         counter.process_position(
             contig,
