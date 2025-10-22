@@ -1,16 +1,14 @@
-use bio::io::fasta;
-
 use crate::haplogroup::types::Locus;
 use indicatif::ProgressBar;
 use rust_htslib::bam::{self, Read};
+use rust_htslib::faidx;
 use std::collections::HashMap;
 use std::error::Error;
-use std::fs::File;
 
 pub fn collect_snp_calls(
     min_depth: u32,
     min_quality: u8,
-    fasta_reader: &mut fasta::IndexedReader<File>,
+    fasta_reader: &mut faidx::Reader,
     mut bam: bam::IndexedReader,
     build_id: String,
     chromosome: String,
@@ -64,7 +62,7 @@ pub fn collect_snp_calls(
 fn process_region<R: Read>(
     bam: &mut R,
     header: &bam::HeaderView,
-    fasta: &mut fasta::IndexedReader<File>,
+    fasta: &mut faidx::Reader,
     positions: &HashMap<u32, Vec<(&str, &Locus)>>,
     build_id: &str,
     min_depth: u32,
@@ -108,11 +106,9 @@ fn process_region<R: Read>(
                                     let base_index = read_pos + i;
                                     let base = sequence[base_index].to_ascii_uppercase();
 
-                                    if let Ok(_) =
-                                        fasta.fetch(&ref_name, ref_pos as u64, (ref_pos + 1) as u64)
-                                    {
-                                        let mut ref_seq = Vec::new();
-                                        fasta.read(&mut ref_seq)?;
+                                    // Use fetch_seq instead of fetch + read
+                                    let ref_seq = fasta.fetch_seq(&ref_name, ref_pos as usize, ref_pos as usize)?;
+                                    if !ref_seq.is_empty() {
                                         coverage.entry(vcf_pos).or_default().push(base);
                                     }
                                 }

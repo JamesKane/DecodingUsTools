@@ -8,6 +8,7 @@ use crate::haplogroup::types::{Haplogroup, HaplogroupResult, Locus};
 use crate::utils::cache::TreeType;
 use indicatif::{ProgressBar, ProgressStyle};
 use rust_htslib::bam::IndexedReader;
+use rust_htslib::faidx;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
@@ -24,7 +25,7 @@ pub fn analyze_haplogroup(
     show_snps: bool,
 ) -> Result<(), Box<dyn Error>> {
     // Initialize the FASTA reader
-    let mut fasta_reader = bio::io::fasta::IndexedReader::from_file(&reference_file)?;
+    let mut fasta_reader = faidx::Reader::from_path(&reference_file)?;
 
     let progress = ProgressBar::new_spinner();
     progress.set_style(
