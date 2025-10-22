@@ -48,6 +48,25 @@ pub fn run(
 
     let mut bam = bam::IndexedReader::from_path(&bam_file)?;
     let header = bam.header().clone();
+
+    // Check if reference file has .gz or .bgz extension
+    let is_compressed = reference_file.ends_with(".gz") || reference_file.ends_with(".bgz");
+
+    // Verify the FASTA index exists (for both compressed and uncompressed)
+    let fai_path = if is_compressed {
+        format!("{}.fai", reference_file)
+    } else {
+        format!("{}.fai", reference_file)
+    };
+
+    if !std::path::Path::new(&fai_path).exists() {
+        return Err(format!(
+            "Reference FASTA index not found at {}. Please run 'samtools faidx {}' first",
+            fai_path, reference_file
+        )
+            .into());
+    }
+
     let mut fasta = IndexedReader::from_file(&reference_file)?;
 
     let (multi_progress, main_progress) = setup_progress_bars();
