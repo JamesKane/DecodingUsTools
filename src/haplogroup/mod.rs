@@ -36,6 +36,11 @@ pub fn analyze_haplogroup(
 
     progress.set_message("Validating BAM reference genome...");
 
+    // Set reference for CRAM files
+    if bam_file.ends_with(".cram") {
+        std::env::set_var("REF_PATH", &reference_file);
+    }
+
     // Use IndexedReader instead of Reader
     let bam = IndexedReader::from_path(&bam_file)?;
     let (genome, chromosome) = validation::validate_reference(&bam, tree_type)?;

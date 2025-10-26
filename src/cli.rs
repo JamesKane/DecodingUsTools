@@ -29,10 +29,10 @@ pub enum Region {
 pub enum Commands {
     /// Analyze BAM file coverage and callability
     Coverage {
-        /// Path to the BAM file
+        /// Path to the BAM or CRAM file
         bam_file: String,
 
-        /// Path to the reference FASTA file
+        /// Path to the reference FASTA file (required for CRAM files)
         #[arg(short = 'r', long = "reference")]
         reference_file: String,
 

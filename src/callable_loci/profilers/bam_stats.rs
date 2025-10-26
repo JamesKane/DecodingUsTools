@@ -27,7 +27,14 @@ impl BamStats {
         }
     }
 
-    pub fn collect_stats(&mut self, bam_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn collect_stats(&mut self, bam_path: &str, reference_path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+        // Set reference for CRAM files if provided
+        if let Some(ref_path) = reference_path {
+            if bam_path.ends_with(".cram") {
+                std::env::set_var("REF_PATH", ref_path);
+            }
+        }
+        
         let mut bam = bam::Reader::from_path(bam_path)?;
 
         let progress = ProgressBar::new_spinner();

@@ -24,9 +24,15 @@ pub fn run(
     mut options: CallableOptions,
     contigs: Option<Vec<String>>,
 ) -> Result<(), Box<dyn Error>> {
+    // Set reference for CRAM files if provided
+
+    if bam_file.ends_with(".cram") {
+        std::env::set_var("REF_PATH", &reference_file);
+    }
+
     // Create and collect BAM statistics first
     let mut bam_stats = BamStats::new(10000);
-    bam_stats.collect_stats(&bam_file)?;
+    bam_stats.collect_stats(&bam_file, Some(&reference_file))?;
 
     // Print BAM statistics
     let stats = bam_stats.get_stats();
