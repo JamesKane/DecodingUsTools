@@ -127,10 +127,10 @@ pub fn collect_analysis_report(
 
 /// Builds a structured CoverageExport from analysis results
 pub fn build_coverage_export(
-    contig_stats: &std::collections::HashMap<usize, crate::callable_loci::profilers::contig_profiler::ContigProfiler>,
-    counter: &crate::callable_loci::profilers::callable_profiler::CallableProfiler,
-    _bam_stats: &crate::callable_loci::profilers::bam_stats::BamStats,
-) -> Result<CoverageExport, Box<dyn std::error::Error>> {
+    contig_stats: &HashMap<usize, ContigProfiler>,
+    counter: &CallableProfiler,
+    _bam_stats: &BamStats,
+) -> Result<CoverageExport, Box<dyn Error>> {
     use crate::callable_loci::types::CalledState;
     use crate::export::formats::coverage::{
         ContigExport, CoverageExport, CoverageSummary, QualityMetrics, StateDistribution,
