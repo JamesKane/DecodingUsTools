@@ -1,4 +1,5 @@
 use crate::sequence_processor::{core::*, threading::*};
+use crate::utils::bam_reader::BamReaderFactory;
 use anyhow::Result;
 use indicatif::ProgressBar;
 use rust_htslib::bam::{self, Read};
@@ -10,11 +11,15 @@ pub struct BamReader {
 
 impl BamReader {
     pub fn new(path: &Path, reference: Option<&str>) -> Result<Self> {
-        let mut reader = bam::Reader::from_path(path)?;
+        let mut reader = BamReaderFactory::open(
+            path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid path encoding"))?,
+            reference
+        ).map_err(|e| anyhow::anyhow!("Failed to open BAM/CRAM file: {}", e))?;
 
         if path.extension().map_or(false, |ext| ext == "cram") {
             if let Some(ref_path) = reference {
-                reader.set_reference(ref_path)?;
+                reader.set_reference(ref_path)
+                    .map_err(|e| anyhow::anyhow!("Failed to set reference: {}", e))?;
             }
         }
 

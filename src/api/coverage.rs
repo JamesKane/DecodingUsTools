@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use rust_htslib::bam::Read;
 use indicatif::MultiProgress;
+use crate::utils::bam_reader::BamReaderFactory;
 
 pub struct CoverageAnalyzer {
     progress_callback: Option<ProgressCallback>,
@@ -44,10 +45,6 @@ impl CoverageAnalyzer {
     }
 
     async fn run_analysis(&self, input: CoverageInput) -> ApiResult<CoverageOutput> {
-        // Set reference for CRAM files if provided
-        if input.bam_file.ends_with(".cram") {
-            std::env::set_var("REF_PATH", &input.reference_file);
-        }
 
         // Collect BAM statistics
         let mut bam_stats = BamStats::new(10000);
@@ -62,7 +59,7 @@ impl CoverageAnalyzer {
 
         let mut options = input.options.clone().with_contigs(input.contigs.clone());
 
-        let mut bam = bam::IndexedReader::from_path(&input.bam_file)
+        let mut bam = BamReaderFactory::open_indexed(&input.bam_file, Some(&input.reference_file))
             .map_err(|e| crate::api::ApiError::from(format!("Failed to open BAM file: {}", e)))?;
         let header = bam.header().clone();
 

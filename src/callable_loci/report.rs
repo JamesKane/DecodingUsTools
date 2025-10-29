@@ -11,7 +11,7 @@ use crate::export::formats::coverage::{
 };
 use crate::haplogroup::types::ReferenceGenome;
 
-use rust_htslib::bam;
+use crate::utils::bam_reader::BamReaderFactory;
 use rust_htslib::bam::Read;
 use std::collections::HashMap;
 use std::error::Error;
@@ -26,7 +26,7 @@ pub fn collect_analysis_report(
     contig_stats: &HashMap<usize, ContigProfiler>,
     counter: &CallableProfiler,
 ) -> Result<BamAnalysisReport, Box<dyn Error>> {
-    let bam = bam::IndexedReader::from_path(bam_file)?;
+    let bam = BamReaderFactory::open_indexed(bam_file, None)?;
     let header = bam.header();
 
     // Collect metadata

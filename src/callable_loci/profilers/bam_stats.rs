@@ -1,6 +1,7 @@
 use rust_htslib::bam::{self, Read};
 use std::collections::HashMap;
 use indicatif::{ProgressBar, ProgressStyle};
+use crate::utils::bam_reader::BamReaderFactory;
 
 pub struct BamStats {
     read_count: usize,
@@ -28,14 +29,8 @@ impl BamStats {
     }
 
     pub fn collect_stats(&mut self, bam_path: &str, reference_path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
-        // Set reference for CRAM files if provided
-        if let Some(ref_path) = reference_path {
-            if bam_path.ends_with(".cram") {
-                std::env::set_var("REF_PATH", ref_path);
-            }
-        }
-        
-        let mut bam = bam::Reader::from_path(bam_path)?;
+
+        let mut bam = BamReaderFactory::open(bam_path, reference_path)?;
 
         let progress = ProgressBar::new_spinner();
         progress.set_style(

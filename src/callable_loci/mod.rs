@@ -5,6 +5,7 @@ pub(crate) mod types;
 mod utils;
 
 use crate::callable_loci::types::CalledState;
+use crate::utils::bam_reader::BamReaderFactory;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 pub use options::CallableOptions;
 use profilers::{
@@ -24,12 +25,6 @@ pub fn run(
     mut options: CallableOptions,
     contigs: Option<Vec<String>>,
 ) -> Result<(), Box<dyn Error>> {
-    // Set reference for CRAM files if provided
-
-    if bam_file.ends_with(".cram") {
-        std::env::set_var("REF_PATH", &reference_file);
-    }
-
     // Create and collect BAM statistics first
     let mut bam_stats = BamStats::new(10000);
     bam_stats.collect_stats(&bam_file, Some(&reference_file))?;
@@ -50,7 +45,7 @@ pub fn run(
 
     options = options.with_contigs(contigs);
 
-    let mut bam = bam::IndexedReader::from_path(&bam_file)?;
+    let mut bam = BamReaderFactory::open_indexed(&bam_file, Some(&reference_file))?;
     let header = bam.header().clone();
 
     // Use rust_htslib faidx which natively supports bgzipped FASTA
