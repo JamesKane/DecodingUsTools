@@ -5,8 +5,6 @@ pub(crate) mod types;
 mod utils;
 
 use crate::callable_loci::types::CalledState;
-use crate::utils::bam_reader::BamReaderFactory;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 pub use options::CallableOptions;
 use profilers::{
     bam_stats::BamStats, callable_profiler::CallableProfiler, contig_profiler::ContigProfiler,
@@ -16,153 +14,6 @@ use rust_htslib::bam::Read;
 use rust_htslib::{bam, faidx};
 use std::collections::HashMap;
 use std::error::Error;
-use crate::utils::progress_manager::ProgressManager;
-
-pub fn run(
-    bam_file: String,
-    reference_file: String,
-    output_bed: String,
-    output_summary: String,
-    mut options: CallableOptions,
-    contigs: Option<Vec<String>>,
-) -> Result<(), Box<dyn Error>> {
-    let progress_mgr = ProgressManager::new();
-    
-    // Create and collect BAM statistics first
-    let mut bam_stats = BamStats::new(10000);
-    bam_stats.collect_stats(&bam_file, Some(&reference_file), &progress_mgr)?;
-
-    // Print BAM statistics
-    let stats = bam_stats.get_stats();
-    println!("\nBAM Statistics:");
-    if let Some(avg_read_length) = stats.get("average_read_length") {
-        println!("Average read length: {:.1} bp", avg_read_length);
-    }
-    if let Some(paired_percentage) = stats.get("paired_percentage") {
-        println!("Paired reads: {:.1}%", paired_percentage);
-    }
-    if let Some(avg_insert_size) = stats.get("average_insert_size") {
-        println!("Average insert size: {:.1} bp", avg_insert_size);
-    }
-    println!(); // Add a blank line for better formatting
-
-    options = options.with_contigs(contigs);
-
-    let mut bam = BamReaderFactory::open_indexed(&bam_file, Some(&reference_file))?;
-    let header = bam.header().clone();
-
-    // Use rust_htslib faidx which natively supports bgzipped FASTA
-    let mut fasta = faidx::Reader::from_path(&reference_file)?;
-
-    //let (multi_progress, main_progress) = setup_progress_bars();
-    let main_progress = progress_mgr.add_spinner("Analyzing coverage...");
-    let mut contig_stats = initialize_contig_stats(&header, &options, &progress_mgr)?;
-    validate_contig_selection(&contig_stats, &options)?;
-
-    let mut counter = initialize_counter(&contig_stats, &output_bed)?;
-    process_contigs(
-        &mut bam,
-        &mut fasta,
-        &header,
-        &mut counter,
-        &mut contig_stats,
-        &options,
-        &main_progress,
-    )?;
-    finish_progress_bars(&contig_stats, &main_progress);
-
-    // Create the report model
-    let report = report::collect_analysis_report(&bam_file, &bam_stats, &contig_stats, &counter)?;
-
-    // Generate HTML report
-    report::write_html_report(&report, &output_summary)?;
-    
-    // NEW: Build API-ready coverage export
-    let coverage_export = report::build_coverage_export(&contig_stats, &counter, &bam_stats)?;
-    
-    // Optional: serialize to JSON for PDS store
-    let json_output = serde_json::to_string_pretty(&coverage_export)?;
-    std::fs::write("coverage_export.json", json_output)?;
-
-    Ok(())
-}
-
-fn setup_progress_bars() -> (MultiProgress, ProgressBar) {
-    let multi_progress = MultiProgress::new();
-    let main_progress = multi_progress.add(ProgressBar::new_spinner());
-    main_progress.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.green} [{elapsed_precise}] {msg}")
-            .unwrap(),
-    );
-    main_progress.set_message("Analyzing coverage...");
-    (multi_progress, main_progress)
-}
-
-fn initialize_contig_stats(
-    header: &bam::HeaderView,
-    options: &CallableOptions,
-    progress_mgr: &ProgressManager,
-) -> Result<HashMap<usize, ContigProfiler>, Box<dyn Error>> {
-    let mut contig_stats = HashMap::new();
-    let selected_contigs: Option<std::collections::HashSet<String>> = options
-        .selected_contigs
-        .as_ref()
-        .map(|contigs| contigs.iter().cloned().collect());
-
-    for tid in 0..header.target_names().len() {
-        let contig_name = std::str::from_utf8(header.tid2name(tid as u32))?;
-        if let Some(ref selected) = selected_contigs {
-            if !selected.contains(contig_name) {
-                continue;
-            }
-        }
-        let length = header.target_len(tid as u32).unwrap_or(0) as usize;
-        contig_stats.insert(
-            tid,
-            ContigProfiler::new(
-                contig_name.to_string(),
-                length,
-                progress_mgr,
-                options.clone(),
-            ),
-        );
-    }
-    Ok(contig_stats)
-}
-
-fn validate_contig_selection(
-    contig_stats: &HashMap<usize, ContigProfiler>,
-    options: &CallableOptions,
-) -> Result<(), Box<dyn Error>> {
-    if let Some(ref selected) = options.selected_contigs {
-        if contig_stats.is_empty() {
-            return Err(format!(
-                "None of the specified contigs ({}) were found in the BAM file",
-                selected
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-            .into());
-        }
-    }
-    Ok(())
-}
-
-fn initialize_counter(
-    contig_stats: &HashMap<usize, ContigProfiler>,
-    output_bed: &str,
-) -> std::io::Result<CallableProfiler> {
-    let largest_contig_length = contig_stats
-        .values()
-        .filter(|stats| stats.name != "chrM")
-        .map(|stats| stats.length)
-        .max()
-        .unwrap_or(0) as u32;
-    CallableProfiler::new(output_bed, largest_contig_length)
-}
 
 fn process_position(pileup: &bam::pileup::Pileup, options: &CallableOptions) -> (u32, u32, u32) {
     let mut raw_depth = 0;
@@ -189,27 +40,6 @@ fn process_position(pileup: &bam::pileup::Pileup, options: &CallableOptions) -> 
     }
 
     (raw_depth, qc_depth, low_mapq_count)
-}
-
-fn process_contigs(
-    bam: &mut bam::IndexedReader,
-    fasta: &mut faidx::Reader,
-    header: &bam::HeaderView,
-    counter: &mut CallableProfiler,
-    contig_stats: &mut HashMap<usize, ContigProfiler>,
-    options: &CallableOptions,
-    main_progress: &ProgressBar,
-) -> Result<(), Box<dyn Error>> {
-    let mut contig_tids: Vec<_> = contig_stats.keys().cloned().collect();
-    contig_tids.sort();
-
-    for &tid in contig_tids.iter() {
-        let contig_name = contig_stats[&tid].name.clone();
-        main_progress.set_message(format!("Processing {}...", contig_name));
-
-        process_single_contig(bam, fasta, header, counter, contig_stats, options, tid)?;
-    }
-    Ok(())
 }
 
 pub fn process_single_contig(
@@ -315,16 +145,6 @@ pub fn process_single_contig(
     let stats = &contig_stats[&tid];
     counter.finish_contig(&stats.name, stats.length as u32)?;
     Ok(())
-}
-
-fn finish_progress_bars(
-    contig_stats: &HashMap<usize, ContigProfiler>,
-    main_progress: &ProgressBar,
-) {
-    for (_, stats) in contig_stats.iter() {
-        stats.progress_bar.finish_with_message("Complete");
-    }
-    main_progress.finish_with_message("Coverage analysis complete!");
 }
 
 fn detect_aligner(header: &HeaderView) -> String {
