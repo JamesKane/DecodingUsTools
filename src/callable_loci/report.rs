@@ -1,129 +1,16 @@
-use super::types::{
-    BamAnalysisReport, BamMetadata, BamStatistics, ContigAnalysis, ContigCoverageStats,
-    ContigQualityStats, ContigStateCounts,
-};
-use super::{detect_aligner, utils, BamStats, CalledState};
+use super::{BamStats, CalledState};
 use crate::callable_loci::profilers::callable_profiler::CallableProfiler;
 use crate::callable_loci::profilers::contig_profiler::ContigProfiler;
 use crate::export::formats::coverage::{
-    ContigExport, CoverageExport, CoverageSummary, QualityMetrics,
-    StateDistribution,
+    ContigExport, CoverageExport, CoverageSummary, QualityMetrics, StateDistribution,
 };
-use crate::types::ReferenceGenome;
 
-use crate::utils::bam_reader::BamReaderFactory;
-use rust_htslib::bam::Read;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::sync::Arc;
-
-pub fn collect_analysis_report(
-    bam_file: &str,
-    bam_stats: &BamStats,
-    contig_stats: &HashMap<usize, ContigProfiler>,
-    counter: &CallableProfiler,
-) -> Result<BamAnalysisReport, Box<dyn Error>> {
-    let bam = BamReaderFactory::open_indexed(bam_file, None)?;
-    let header = bam.header();
-
-    // Collect metadata
-    let metadata = BamMetadata {
-        reference_build: ReferenceGenome::from_header(header)
-            .map(|g| g.name().to_string())
-            .unwrap_or_else(|| "Unknown".to_string()),
-        aligner: detect_aligner(header),
-        sample_count: bam_stats.max_samples,
-    };
-
-    // Collect BAM statistics
-    let stats = BamStatistics {
-        average_read_length: *bam_stats
-            .get_stats()
-            .get("average_read_length")
-            .unwrap_or(&0.0),
-        paired_percentage: *bam_stats
-            .get_stats()
-            .get("paired_percentage")
-            .unwrap_or(&0.0),
-        average_insert_size: *bam_stats
-            .get_stats()
-            .get("average_insert_size")
-            .unwrap_or(&0.0),
-    };
-
-    // Collect contig analyses
-    let mut contig_analyses = Vec::new();
-    for (_, stats) in contig_stats.iter() {
-        let counts = counter.get_contig_counts(&stats.name);
-        let coverage_percent = (stats.n_covered_bases as f64 / stats.length as f64) * 100.0;
-        let average_depth = stats.summed_coverage as f64 / stats.length as f64;
-
-        let analysis = ContigAnalysis {
-            name: stats.name.clone(),
-            length: stats.length,
-            coverage_stats: ContigCoverageStats {
-                unique_reads: stats.n_reads as u64,
-                state_counts: ContigStateCounts {
-                    reference_n: counts[CalledState::REF_N as usize],
-                    no_coverage: counts[CalledState::NO_COVERAGE as usize],
-                    low_coverage: counts[CalledState::LOW_COVERAGE as usize],
-                    excessive_coverage: counts[CalledState::EXCESSIVE_COVERAGE as usize],
-                    poor_mapping_quality: counts[CalledState::POOR_MAPPING_QUALITY as usize],
-                    callable: counts[CalledState::CALLABLE as usize],
-                },
-                coverage_percent,
-                average_depth,
-                covered_bases: stats.n_covered_bases,
-                total_bases: stats.length as u64,
-            },
-            quality_stats: ContigQualityStats {
-                average_mapq: if stats.quality_bases > 0 {
-                    stats.summed_mapq as f64 / stats.quality_bases as f64
-                } else {
-                    0.0
-                },
-                average_baseq: if stats.quality_bases > 0 {
-                    stats.summed_baseq as f64 / stats.quality_bases as f64
-                } else {
-                    0.0
-                },
-                q30_percentage: if stats.quality_bases > 0 {
-                    let avg_baseq = stats.summed_baseq as f64 / stats.quality_bases as f64;
-                    if avg_baseq >= 30.0 {
-                        100.0
-                    } else if avg_baseq < 20.0 {
-                        0.0
-                    } else {
-                        ((avg_baseq - 20.0) / 10.0) * 100.0
-                    }
-                } else {
-                    0.0
-                },
-            },
-            coverage_plot: {
-                let plot_path = format!("{}_coverage.svg", stats.name);
-                if Path::new(&plot_path).exists() {
-                    Some(plot_path)
-                } else {
-                    None
-                }
-            },
-        };
-        contig_analyses.push(analysis);
-    }
-
-    // Sort contig analyses by name
-    contig_analyses.sort_by(|a, b| utils::natural_sort::natural_cmp(&a.name, &b.name));
-
-    Ok(BamAnalysisReport {
-        metadata,
-        bam_stats: stats,
-        contig_analyses,
-    })
-}
 
 /// Builds a structured CoverageExport from analysis results
 pub fn build_coverage_export(
@@ -148,7 +35,7 @@ pub fn build_coverage_export(
     let mut contig_exports = Vec::new();
 
     let mut sorted_contigs: Vec<_> = contig_stats.values().collect();
-    sorted_contigs.sort_by(|a, b| a.name.cmp(&b.name));
+    sorted_contigs.sort_by(|a, b| compare_contig_names(&a.name, &b.name));
 
     for stats in sorted_contigs {
         let counts = counter.get_contig_counts(&stats.name);
@@ -242,7 +129,6 @@ pub fn build_coverage_export(
         quality_metrics,
     })
 }
-
 
 pub fn write_html_report(
     export: &CoverageExport,
@@ -438,4 +324,62 @@ fn write_contig_panel(
 
 fn add_table_row(html: &mut String, label: &str, value: impl std::fmt::Display) {
     html.push_str(&format!(r#"<tr><td>{}</td><td>{}</td></tr>"#, label, value));
+}
+
+/// Compare contig names for natural sorting (chr1, chr2, ..., chr10, chrX, chrY, chrM)
+/// Supports both "chr" prefixed (b38/hs1) and unprefixed (b37) chromosome names
+fn compare_contig_names(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+
+    // Extract prefix and suffix
+    let (a_prefix, a_suffix) = split_contig_name(a);
+    let (b_prefix, b_suffix) = split_contig_name(b);
+
+    // First compare prefixes (e.g., "chr" vs "chr")
+    match a_prefix.cmp(b_prefix) {
+        Ordering::Equal => {}
+        other => return other,
+    }
+
+    // Define chromosome order priority
+    let order = |s: &str| -> (usize, u32) {
+        // Try to parse as number
+        if let Ok(num) = s.parse::<u32>() {
+            return (0, num); // Numeric chromosomes come first
+        }
+
+        // Special chromosomes
+        match s {
+            "X" => (1, 0),
+            "Y" => (2, 0),
+            "M" | "MT" => (3, 0),
+            _ => (4, 0), // Everything else comes last, alphabetically
+        }
+    };
+
+    let (a_cat, a_num) = order(a_suffix);
+    let (b_cat, b_num) = order(b_suffix);
+
+    match a_cat.cmp(&b_cat) {
+        Ordering::Equal => {
+            if a_cat == 0 {
+                // Both are numeric, compare numbers
+                a_num.cmp(&b_num)
+            } else {
+                // Same category, use lexicographic comparison
+                a_suffix.cmp(b_suffix)
+            }
+        }
+        other => other,
+    }
+}
+
+/// Split contig name into prefix and suffix (e.g., "chr10" -> ("chr", "10"))
+fn split_contig_name(name: &str) -> (&str, &str) {
+    // Find where the numeric/identifier part starts
+    let split_pos = name
+        .find(|c: char| c.is_ascii_digit() || c == 'X' || c == 'Y' || c == 'M')
+        .unwrap_or(name.len());
+
+    name.split_at(split_pos)
 }

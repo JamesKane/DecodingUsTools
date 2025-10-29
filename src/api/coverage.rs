@@ -1,3 +1,9 @@
+//! The `CoverageAnalyzer` struct is responsible for coordinating the analysis of genomic coverage
+//! using BAM and reference genome files. It provides functionality for collecting statistics,
+//! generating output files (e.g., BED and HTML summaries), and exporting coverage data.
+//!
+//! This struct supports emitting progress events via a callback function, making it suitable for
+//! integration into APIs or CLI tools that require progress reporting.
 use crate::callable_loci;
 use crate::export::formats::coverage::CoverageExport;
 use crate::api::{ApiResult, ProgressCallback, ProgressEvent};
