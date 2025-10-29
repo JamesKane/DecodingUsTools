@@ -56,7 +56,13 @@ pub struct CoverageSummary {
 pub struct ContigExport {
     pub name: String,
     pub length: usize,
-    pub coverage_stats: ContigCoverageStats,
+    // Remove coverage_stats - use simplified fields instead
+    pub unique_reads: u64,
+    pub coverage_percent: f64,
+    pub average_depth: f64,
+    pub covered_bases: u64,
+    pub total_bases: u64,
+
     pub quality_stats: ContigQualityStats,
     pub state_distribution: StateDistribution,
 

@@ -132,6 +132,10 @@ pub fn build_coverage_export(
     _bam_stats: &crate::callable_loci::profilers::bam_stats::BamStats,
 ) -> Result<CoverageExport, Box<dyn std::error::Error>> {
     use crate::callable_loci::types::CalledState;
+    use crate::export::formats::coverage::{
+        CoverageExport, CoverageSummary, ContigExport, StateDistribution, QualityMetrics,
+    };
+    use std::sync::Arc;
 
     let mut total_bases = 0u64;
     let mut callable_bases = 0u64;
@@ -148,12 +152,23 @@ pub fn build_coverage_export(
 
     for stats in sorted_contigs {
         let counts = counter.get_contig_counts(&stats.name);
-        let coverage_stats = stats.get_coverage_stats();
         let quality_stats = stats.get_quality_stats();
+
+        let coverage_percent = if stats.length > 0 {
+            (stats.n_covered_bases as f64 / stats.length as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        let average_depth = if stats.n_covered_bases > 0 {
+            stats.summed_coverage as f64 / stats.n_covered_bases as f64
+        } else {
+            0.0
+        };
 
         total_bases += stats.length as u64;
         callable_bases += counts[CalledState::CALLABLE as usize];
-        total_depth += coverage_stats.average_depth * stats.length as f64;
+        total_depth += average_depth * stats.length as f64;
         total_mapq += quality_stats.average_mapq * stats.length as f64;
         total_baseq += quality_stats.average_baseq * stats.length as f64;
         q30_bases += (quality_stats.q30_percentage / 100.0 * stats.length as f64) as u64;
@@ -171,7 +186,11 @@ pub fn build_coverage_export(
         contig_exports.push(ContigExport {
             name: stats.name.clone(),
             length: stats.length,
-            coverage_stats,
+            unique_reads: stats.n_reads as u64,
+            coverage_percent,
+            average_depth,
+            covered_bases: stats.n_covered_bases,
+            total_bases: stats.length as u64,
             quality_stats,
             state_distribution,
             coverage_histogram: None,
