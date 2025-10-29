@@ -2,6 +2,7 @@ use rust_htslib::bam::{self, Read};
 use std::collections::HashMap;
 use indicatif::{ProgressBar, ProgressStyle};
 use crate::utils::bam_reader::BamReaderFactory;
+use crate::utils::progress_manager::ProgressManager;
 
 pub struct BamStats {
     read_count: usize,
@@ -28,16 +29,11 @@ impl BamStats {
         }
     }
 
-    pub fn collect_stats(&mut self, bam_path: &str, reference_path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn collect_stats(&mut self, bam_path: &str, reference_path: Option<&str>, progress_mgr: &ProgressManager) -> Result<(), Box<dyn std::error::Error>> {
 
         let mut bam = BamReaderFactory::open(bam_path, reference_path)?;
 
-        let progress = ProgressBar::new_spinner();
-        progress.set_style(
-            ProgressStyle::default_spinner()
-                .template("{spinner:.green} [{elapsed_precise}] Collecting BAM statistics...")
-                .unwrap(),
-        );
+        let progress = progress_mgr.add_spinner("Collecting BAM statistics...");
 
         for (i, record_result) in bam.records().enumerate() {
             if i >= self.max_samples {

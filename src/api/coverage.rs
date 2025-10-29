@@ -10,8 +10,8 @@ use rust_htslib::{bam, faidx};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use rust_htslib::bam::Read;
-use indicatif::MultiProgress;
 use crate::utils::bam_reader::BamReaderFactory;
+use crate::utils::progress_manager::ProgressManager;
 
 pub struct CoverageAnalyzer {
     progress_callback: Option<ProgressCallback>,
@@ -48,7 +48,8 @@ impl CoverageAnalyzer {
 
         // Collect BAM statistics
         let mut bam_stats = BamStats::new(10000);
-        bam_stats.collect_stats(&input.bam_file, Some(&input.reference_file))
+        let progress_mgr = ProgressManager::new();
+        bam_stats.collect_stats(&input.bam_file, Some(&input.reference_file), &progress_mgr)
             .map_err(|e| crate::api::ApiError::from(format!("Failed to collect BAM stats: {}", e)))?;
 
         // Prepare output paths
@@ -155,8 +156,8 @@ fn initialize_contig_stats(
         .as_ref()
         .map(|contigs| contigs.iter().cloned().collect());
 
-    // Create a dummy MultiProgress for API usage (no progress bars)
-    let mp = &MultiProgress::new();
+    // Create a ProgressManager even for API usage (progress bars won't be visible in non-terminal contexts)
+    let progress_mgr = ProgressManager::new();
 
     for tid in 0..header.target_names().len() {
         let contig_name = std::str::from_utf8(header.tid2name(tid as u32))
@@ -170,13 +171,12 @@ fn initialize_contig_stats(
 
         let length = header.target_len(tid as u32).unwrap_or(0) as usize;
 
-        // Create ContigProfiler without progress bars for API usage
         contig_stats.insert(
             tid,
             ContigProfiler::new(
                 contig_name.to_string(),
                 length,
-                mp,
+                &progress_mgr,
                 options.clone(),
             ),
         );

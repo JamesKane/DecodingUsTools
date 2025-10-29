@@ -16,6 +16,7 @@ use rust_htslib::bam::Read;
 use rust_htslib::{bam, faidx};
 use std::collections::HashMap;
 use std::error::Error;
+use crate::utils::progress_manager::ProgressManager;
 
 pub fn run(
     bam_file: String,
@@ -25,9 +26,11 @@ pub fn run(
     mut options: CallableOptions,
     contigs: Option<Vec<String>>,
 ) -> Result<(), Box<dyn Error>> {
+    let progress_mgr = ProgressManager::new();
+    
     // Create and collect BAM statistics first
     let mut bam_stats = BamStats::new(10000);
-    bam_stats.collect_stats(&bam_file, Some(&reference_file))?;
+    bam_stats.collect_stats(&bam_file, Some(&reference_file), &progress_mgr)?;
 
     // Print BAM statistics
     let stats = bam_stats.get_stats();
@@ -51,8 +54,9 @@ pub fn run(
     // Use rust_htslib faidx which natively supports bgzipped FASTA
     let mut fasta = faidx::Reader::from_path(&reference_file)?;
 
-    let (multi_progress, main_progress) = setup_progress_bars();
-    let mut contig_stats = initialize_contig_stats(&header, &options, &multi_progress)?;
+    //let (multi_progress, main_progress) = setup_progress_bars();
+    let main_progress = progress_mgr.add_spinner("Analyzing coverage...");
+    let mut contig_stats = initialize_contig_stats(&header, &options, &progress_mgr)?;
     validate_contig_selection(&contig_stats, &options)?;
 
     let mut counter = initialize_counter(&contig_stats, &output_bed)?;
@@ -98,7 +102,7 @@ fn setup_progress_bars() -> (MultiProgress, ProgressBar) {
 fn initialize_contig_stats(
     header: &bam::HeaderView,
     options: &CallableOptions,
-    multi_progress: &MultiProgress,
+    progress_mgr: &ProgressManager,
 ) -> Result<HashMap<usize, ContigProfiler>, Box<dyn Error>> {
     let mut contig_stats = HashMap::new();
     let selected_contigs: Option<std::collections::HashSet<String>> = options
@@ -119,7 +123,7 @@ fn initialize_contig_stats(
             ContigProfiler::new(
                 contig_name.to_string(),
                 length,
-                multi_progress,
+                progress_mgr,
                 options.clone(),
             ),
         );

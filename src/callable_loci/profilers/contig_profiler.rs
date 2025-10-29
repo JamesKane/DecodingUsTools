@@ -2,6 +2,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rust_htslib::bam;
 use crate::callable_loci::options::CallableOptions;
 use crate::callable_loci::types::ContigStateCounts;
+use crate::utils::progress_manager::ProgressManager;
 
 pub struct ContigProfiler {
     pub name: String,
@@ -21,15 +22,10 @@ impl ContigProfiler {
     pub fn new(
         name: String,
         length: usize,
-        multi_progress: &MultiProgress,
+        progress_mgr: &ProgressManager,
         options: CallableOptions,
     ) -> Self {
-        let progress_bar = multi_progress.add(ProgressBar::new(length as u64));
-        progress_bar.set_style(ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}")
-            .unwrap()
-            .progress_chars("#>-"));
-        progress_bar.set_message(format!("Processing {}", name));
+        let progress_bar = progress_mgr.add_contig_bar(&name, length);
 
         Self {
             name,
