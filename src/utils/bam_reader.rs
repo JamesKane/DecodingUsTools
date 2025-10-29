@@ -1,5 +1,4 @@
-// src/utils/bam_reader.rs
-use rust_htslib::bam::{self, Read};
+use rust_htslib::bam::{self};
 use std::error::Error;
 
 pub struct BamReaderFactory;
