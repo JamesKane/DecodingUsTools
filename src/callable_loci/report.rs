@@ -168,6 +168,7 @@ fn write_bam_stats_section(
         bam_stats.max_samples
     ));
 
+    html.push_str("<div class='stats-columns'>");
     html.push_str("<dl>");
     html.push_str(&format!(
         r#"<dt>Reference Build</dt><dd>{}</dd>
@@ -175,33 +176,34 @@ fn write_bam_stats_section(
             <dt>Sequencing Platform</dt><dd>{}</dd>
             <dt>Average read length</dt><dd>{} bp</dd>
             <dt>Total Bases</dt><dd>{}</dd>
-            <dt>Callable Bases</dt><dd>{}</dd>
-            <dt>Callable Percentage</dt><dd>{:.2}%</dd>
-            <dt>Average Depth</dt><dd>{:.2}×</dd>
-            <dt>Contigs Analyzed</dt><dd>{}</dd>"#,
+            <dt>Callable Bases</dt><dd>{}</dd>"#,
         export.summary.reference_build,
         export.summary.aligner,
         export.summary.sequencing_platform,
         export.summary.read_length,
         export.summary.total_bases,
-        export.summary.callable_bases,
-        export.summary.callable_percentage,
-        export.summary.average_depth,
-        export.summary.contigs_analyzed
+        export.summary.callable_bases
     ));
     html.push_str("</dl>");
 
-    // Add quality metrics section
-    html.push_str("<h3>Quality Metrics</h3><dl>");
+    html.push_str("<dl>");
     html.push_str(&format!(
-        r#"<dt>Average MapQ</dt><dd>{:.1}</dd>
-        <dt>Average BaseQ</dt><dd>{:.1}</dd>
-        <dt>Q30 Percentage</dt><dd>{:.2}%</dd>"#,
+        r#"<dt>Callable Percentage</dt><dd>{:.2}%</dd>
+            <dt>Average Depth</dt><dd>{:.2}×</dd>
+            <dt>Contigs Analyzed</dt><dd>{}</dd>
+            <dt>Average MapQ</dt><dd>{:.1}</dd>
+            <dt>Average BaseQ</dt><dd>{:.1}</dd>
+            <dt>Q30 Percentage</dt><dd>{:.2}%</dd>"#,
+        export.summary.callable_percentage,
+        export.summary.average_depth,
+        export.summary.contigs_analyzed,
         export.quality_metrics.average_mapq,
         export.quality_metrics.average_baseq,
         export.quality_metrics.q30_percentage
     ));
-    html.push_str("</dl></section>");
+    html.push_str("</dl>");
+    html.push_str("</div>");
+    html.push_str("</section>");
 
     Ok(())
 }

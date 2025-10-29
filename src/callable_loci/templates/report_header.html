@@ -87,6 +87,18 @@
             border-color: var(--primary-color);
             box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.2);
         }
+
+        .stats-columns {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+        }
+
+        @media (max-width: 768px) {
+            .stats-columns {
+                grid-template-columns: 1fr;
+            }
+        }
     </style>
 </head>
 <body>
