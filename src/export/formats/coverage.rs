@@ -109,6 +109,7 @@ mod arc_serde {
 pub struct CoverageSummary {
     pub aligner: String,
     pub reference_build: String,
+    pub sequencing_platform: String,
     pub read_length: usize,
     pub total_bases: u64,
     pub callable_bases: u64,

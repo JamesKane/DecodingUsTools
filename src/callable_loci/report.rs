@@ -93,6 +93,7 @@ pub fn build_coverage_export(
     let summary = CoverageSummary {
         aligner: bam_stats.aligner().to_string(),
         reference_build: bam_stats.reference_build().to_string(),
+        sequencing_platform: bam_stats.infer_platform(),
         read_length: bam_stats.average_read_length(),
         total_bases,
         callable_bases,
@@ -170,15 +171,17 @@ fn write_bam_stats_section(
     html.push_str("<dl>");
     html.push_str(&format!(
         r#"<dt>Reference Build</dt><dd>{}</dd>
-        <dt>Aligner</dt><dd>{}</dd>
-        <dt>Average read length</dt><dd>{} bp</dd>
-        <dt>Total Bases</dt><dd>{}</dd>
-        <dt>Callable Bases</dt><dd>{}</dd>
-        <dt>Callable Percentage</dt><dd>{:.2}%</dd>
-        <dt>Average Depth</dt><dd>{:.2}×</dd>
-        <dt>Contigs Analyzed</dt><dd>{}</dd>"#,
+            <dt>Aligner</dt><dd>{}</dd>
+            <dt>Sequencing Platform</dt><dd>{}</dd>
+            <dt>Average read length</dt><dd>{} bp</dd>
+            <dt>Total Bases</dt><dd>{}</dd>
+            <dt>Callable Bases</dt><dd>{}</dd>
+            <dt>Callable Percentage</dt><dd>{:.2}%</dd>
+            <dt>Average Depth</dt><dd>{:.2}×</dd>
+            <dt>Contigs Analyzed</dt><dd>{}</dd>"#,
         export.summary.reference_build,
         export.summary.aligner,
+        export.summary.sequencing_platform,
         export.summary.read_length,
         export.summary.total_bases,
         export.summary.callable_bases,
