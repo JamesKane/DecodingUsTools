@@ -1,6 +1,7 @@
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rust_htslib::bam;
 use crate::callable_loci::options::CallableOptions;
+use crate::callable_loci::types::ContigStateCounts;
 
 pub struct ContigProfiler {
     pub name: String,
@@ -81,5 +82,76 @@ impl ContigProfiler {
 
     pub fn finish(&self) {
         self.progress_bar.finish_with_message("Complete");
+    }
+
+    /// Calculate coverage statistics for this contig
+    pub fn get_coverage_stats(&self) -> crate::callable_loci::types::ContigCoverageStats {
+        use crate::callable_loci::types::{ContigCoverageStats, ContigStateCounts};
+
+        let average_depth = if self.n_covered_bases > 0 {
+            self.summed_coverage as f64 / self.n_covered_bases as f64
+        } else {
+            0.0
+        };
+
+        let coverage_percent = if self.length > 0 {
+            (self.n_covered_bases as f64 / self.length as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        ContigCoverageStats {
+            unique_reads: self.n_reads as u64,
+            state_counts: ContigStateCounts {
+                reference_n: 0, // Will be populated from CallableProfiler
+                no_coverage: 0,
+                low_coverage: 0,
+                excessive_coverage: 0,
+                poor_mapping_quality: 0,
+                callable: 0,
+            },
+            coverage_percent,
+            average_depth,
+            covered_bases: self.n_covered_bases,
+            total_bases: self.length as u64,
+        }
+    }
+
+    /// Calculate quality statistics for this contig
+    pub fn get_quality_stats(&self) -> crate::callable_loci::types::ContigQualityStats {
+        use crate::callable_loci::types::ContigQualityStats;
+
+        let average_mapq = if self.quality_bases > 0 {
+            self.summed_mapq as f64 / self.quality_bases as f64
+        } else {
+            0.0
+        };
+
+        let average_baseq = if self.quality_bases > 0 {
+            self.summed_baseq as f64 / self.quality_bases as f64
+        } else {
+            0.0
+        };
+
+        // Estimate Q30 percentage based on average base quality
+        // This is an approximation - for exact calculation you'd need to track Q30 bases separately
+        let q30_percentage = if self.quality_bases > 0 {
+            if average_baseq >= 30.0 {
+                100.0
+            } else if average_baseq < 20.0 {
+                0.0
+            } else {
+                // Linear interpolation between Q20 and Q30
+                ((average_baseq - 20.0) / 10.0) * 100.0
+            }
+        } else {
+            0.0
+        };
+
+        ContigQualityStats {
+            average_mapq,
+            average_baseq,
+            q30_percentage,
+        }
     }
 }

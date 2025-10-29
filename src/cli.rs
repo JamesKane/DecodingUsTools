@@ -1,28 +1,11 @@
 use clap::{Parser, Subcommand};
+pub use crate::types::{Region, TreeProvider};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
     #[command(subcommand)]
     pub command: Commands,
-}
-
-#[derive(clap::ValueEnum, Clone, Debug)]
-pub enum TreeProvider {
-    #[value(name = "ftdna")]
-    FTDNA,
-    #[value(name = "decodingus")]
-    DecodingUs,
-}
-
-#[derive(clap::ValueEnum, Clone, Debug)]
-pub enum Region {
-    #[value(name = "full")]
-    Full,
-    #[value(name = "chrY")]
-    Ychr,
-    #[value(name = "chrM")]
-    Mtchr,
 }
 
 #[derive(Subcommand)]

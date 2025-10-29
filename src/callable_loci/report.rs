@@ -2,15 +2,23 @@ use super::types::{
     BamAnalysisReport, BamMetadata, BamStatistics, ContigAnalysis, ContigCoverageStats,
     ContigQualityStats, ContigStateCounts,
 };
-use super::{detect_aligner, utils, BamStats, CallableProfiler, CalledState, ContigProfiler};
+use super::{detect_aligner, utils, BamStats, CalledState};
 use crate::haplogroup::types::ReferenceGenome;
-use rust_htslib::bam;
-use rust_htslib::bam::Read;
+use crate::export::formats::coverage::{
+    CoverageExport, CoverageSummary, ContigExport, StateDistribution,
+    QualityMetrics, HistogramBin,
+};
+use crate::callable_loci::profilers::callable_profiler::CallableProfiler;
+use crate::callable_loci::profilers::contig_profiler::ContigProfiler;
+
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
+use rust_htslib::bam;
+use rust_htslib::bam::Read;
 
 pub fn collect_analysis_report(
     bam_file: &str,
@@ -57,7 +65,7 @@ pub fn collect_analysis_report(
             name: stats.name.clone(),
             length: stats.length,
             coverage_stats: ContigCoverageStats {
-                unique_reads: stats.n_selected_reads as u64,
+                unique_reads: stats.n_reads as u64,
                 state_counts: ContigStateCounts {
                     reference_n: counts[CalledState::REF_N as usize],
                     no_coverage: counts[CalledState::NO_COVERAGE as usize],
@@ -68,15 +76,29 @@ pub fn collect_analysis_report(
                 },
                 coverage_percent,
                 average_depth,
+                covered_bases: stats.n_covered_bases,
+                total_bases: stats.length as u64,
             },
             quality_stats: ContigQualityStats {
-                average_mapq: if stats.n_selected_reads > 0 {
-                    stats.summed_mapq as f64 / stats.n_selected_reads as f64
+                average_mapq: if stats.quality_bases > 0 {
+                    stats.summed_mapq as f64 / stats.quality_bases as f64
                 } else {
                     0.0
                 },
                 average_baseq: if stats.quality_bases > 0 {
                     stats.summed_baseq as f64 / stats.quality_bases as f64
+                } else {
+                    0.0
+                },
+                q30_percentage: if stats.quality_bases > 0 {
+                    let avg_baseq = stats.summed_baseq as f64 / stats.quality_bases as f64;
+                    if avg_baseq >= 30.0 {
+                        100.0
+                    } else if avg_baseq < 20.0 {
+                        0.0
+                    } else {
+                        ((avg_baseq - 20.0) / 10.0) * 100.0
+                    }
                 } else {
                     0.0
                 },
@@ -100,6 +122,102 @@ pub fn collect_analysis_report(
         metadata,
         bam_stats: stats,
         contig_analyses,
+    })
+}
+
+/// Builds a structured CoverageExport from analysis results
+pub fn build_coverage_export(
+    contig_stats: &std::collections::HashMap<usize, crate::callable_loci::profilers::contig_profiler::ContigProfiler>,
+    counter: &crate::callable_loci::profilers::callable_profiler::CallableProfiler,
+    _bam_stats: &crate::callable_loci::profilers::bam_stats::BamStats,
+) -> Result<CoverageExport, Box<dyn std::error::Error>> {
+    use crate::callable_loci::types::CalledState;
+
+    let mut total_bases = 0u64;
+    let mut callable_bases = 0u64;
+    let mut total_depth = 0f64;
+    let mut total_mapq = 0f64;
+    let mut total_baseq = 0f64;
+    let mut q30_bases = 0u64;
+    let mut total_quality_positions = 0u64;
+
+    let mut contig_exports = Vec::new();
+
+    let mut sorted_contigs: Vec<_> = contig_stats.values().collect();
+    sorted_contigs.sort_by(|a, b| a.name.cmp(&b.name));
+
+    for stats in sorted_contigs {
+        let counts = counter.get_contig_counts(&stats.name);
+        let coverage_stats = stats.get_coverage_stats();
+        let quality_stats = stats.get_quality_stats();
+
+        total_bases += stats.length as u64;
+        callable_bases += counts[CalledState::CALLABLE as usize];
+        total_depth += coverage_stats.average_depth * stats.length as f64;
+        total_mapq += quality_stats.average_mapq * stats.length as f64;
+        total_baseq += quality_stats.average_baseq * stats.length as f64;
+        q30_bases += (quality_stats.q30_percentage / 100.0 * stats.length as f64) as u64;
+        total_quality_positions += stats.length as u64;
+
+        let state_distribution = StateDistribution {
+            ref_n: counts[CalledState::REF_N as usize],
+            callable: counts[CalledState::CALLABLE as usize],
+            no_coverage: counts[CalledState::NO_COVERAGE as usize],
+            low_coverage: counts[CalledState::LOW_COVERAGE as usize],
+            excessive_coverage: counts[CalledState::EXCESSIVE_COVERAGE as usize],
+            poor_mapping_quality: counts[CalledState::POOR_MAPPING_QUALITY as usize],
+        };
+
+        contig_exports.push(ContigExport {
+            name: stats.name.clone(),
+            length: stats.length,
+            coverage_stats,
+            quality_stats,
+            state_distribution,
+            coverage_histogram: None,
+        });
+    }
+
+    let average_depth = if total_bases > 0 {
+        total_depth / total_bases as f64
+    } else {
+        0.0
+    };
+
+    let summary = CoverageSummary {
+        total_bases,
+        callable_bases,
+        callable_percentage: if total_bases > 0 {
+            (callable_bases as f64 / total_bases as f64) * 100.0
+        } else {
+            0.0
+        },
+        average_depth,
+        contigs_analyzed: contig_stats.len(),
+    };
+
+    let quality_metrics = QualityMetrics {
+        average_mapq: if total_quality_positions > 0 {
+            total_mapq / total_quality_positions as f64
+        } else {
+            0.0
+        },
+        average_baseq: if total_quality_positions > 0 {
+            total_baseq / total_quality_positions as f64
+        } else {
+            0.0
+        },
+        q30_percentage: if total_quality_positions > 0 {
+            (q30_bases as f64 / total_quality_positions as f64) * 100.0
+        } else {
+            0.0
+        },
+    };
+
+    Ok(CoverageExport {
+        summary,
+        contigs: Arc::new(contig_exports),
+        quality_metrics,
     })
 }
 

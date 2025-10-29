@@ -1,7 +1,7 @@
 mod options;
-mod profilers;
-mod report;
-mod types;
+pub(crate) mod profilers;
+pub(crate) mod report;
+pub(crate) mod types;
 mod utils;
 
 use crate::callable_loci::types::CalledState;
@@ -77,6 +77,13 @@ pub fn run(
 
     // Generate HTML report
     report::write_html_report(&report, &output_summary)?;
+    
+    // NEW: Build API-ready coverage export
+    let coverage_export = report::build_coverage_export(&contig_stats, &counter, &bam_stats)?;
+    
+    // Optional: serialize to JSON for PDS store
+    let json_output = serde_json::to_string_pretty(&coverage_export)?;
+    std::fs::write("coverage_export.json", json_output)?;
 
     Ok(())
 }
@@ -206,7 +213,7 @@ fn process_contigs(
     Ok(())
 }
 
-fn process_single_contig(
+pub fn process_single_contig(
     bam: &mut bam::IndexedReader,
     fasta: &mut faidx::Reader,
     header: &bam::HeaderView,

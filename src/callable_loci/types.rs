@@ -54,12 +54,15 @@ pub struct ContigCoverageStats {
     pub state_counts: ContigStateCounts,
     pub coverage_percent: f64,
     pub average_depth: f64,
+    pub covered_bases: u64,
+    pub total_bases: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ContigQualityStats {
     pub average_mapq: f64,
     pub average_baseq: f64,
+    pub q30_percentage: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

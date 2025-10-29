@@ -1,4 +1,4 @@
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CallableOptions {
     pub min_depth: u32,
     pub max_depth: u32,

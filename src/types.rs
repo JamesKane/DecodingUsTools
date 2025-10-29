@@ -1,4 +1,12 @@
-use crate::cli::Region;
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum Region {
+    #[value(name = "full")]
+    Full,
+    #[value(name = "chrY")]
+    Ychr,
+    #[value(name = "chrM")]
+    Mtchr,
+}
 
 impl Region {
     pub fn to_chromosome_names(&self) -> Vec<String> {
@@ -16,4 +24,12 @@ impl Region {
             Region::Mtchr => "chrM",
         }
     }
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum TreeProvider {
+    #[value(name = "ftdna")]
+    FTDNA,
+    #[value(name = "decodingus")]
+    DecodingUs,
 }

@@ -3,6 +3,14 @@ name = "decodingus-tools"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "decoding_us_tools"
+path = "src/lib.rs"
+
+[[bin]]
+name = "decoding-us-tools"
+path = "src/main.rs"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
@@ -23,6 +31,11 @@ sha2 = "0.10"
 seahash = "4.1"
 niffler = "2.3"
 protobuf = "3.4"
+thiserror = "1.0.69"
+
+[features]
+default = ["cli"]
+cli = []
 
 [build-dependencies]
 protobuf-codegen = "3.4"
