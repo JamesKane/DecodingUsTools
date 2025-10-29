@@ -58,7 +58,7 @@ impl CoverageAnalyzer {
         let output_summary = input.output_summary.clone()
             .unwrap_or_else(|| "summary.html".to_string());
 
-        let mut options = input.options.clone().with_contigs(input.contigs.clone());
+        let options = input.options.clone().with_contigs(input.contigs.clone());
 
         let mut bam = BamReaderFactory::open_indexed(&input.bam_file, Some(&input.reference_file))
             .map_err(|e| crate::api::ApiError::from(format!("Failed to open BAM file: {}", e)))?;

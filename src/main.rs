@@ -18,6 +18,7 @@ use clap::Parser;
 use crate::bam_fixer::BamFixer;
 use anyhow::Context;
 use std::error::Error;
+use crate::api::coverage::{CoverageAnalyzer, CoverageInput};
 use crate::utils::cache::TreeType;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -47,14 +48,21 @@ fn main() -> Result<(), Box<dyn Error>> {
                 max_low_mapq,
                 max_low_mapq_fraction,
             );
-            callable_loci::run(
-                bam_file,
-                reference_file,
-                output_file,
-                summary_file,
-                options,
+            let input = CoverageInput {
+                bam_file: bam_file.clone(),
+                reference_file: reference_file.clone(),
                 contigs,
-            )?;
+                options,
+                output_bed: Some(output_file),
+                output_summary: Some(summary_file),
+            };
+
+            let analyzer = CoverageAnalyzer::new();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let result = rt.block_on(analyzer.analyze(input))?;
         }
         cli::Commands::FindYBranch {
             bam_file,
