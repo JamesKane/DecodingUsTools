@@ -98,21 +98,46 @@ impl ReferenceGenome {
     }
 
     pub fn from_header(header: &rust_htslib::bam::HeaderView) -> Option<Self> {
-        for _tid in 0..header.target_count() {
-            // Get SQ lines from header text
-            let header_text = String::from_utf8_lossy(header.as_bytes());
+        let header_text = String::from_utf8_lossy(header.as_bytes());
 
-            // Look for assembly information in header text
-            if header_text.contains("AS:GRCh38") || header_text.contains("GCA_000001405.15") {
-                return Some(ReferenceGenome::GRCh38);
-            } else if header_text.contains("AS:CHM13") || header_text.contains("GCA_009914755.4") {
+        // Look for assembly information in header text
+        if header_text.contains("AS:GRCh38") || header_text.contains("GCA_000001405.15") {
+            return Some(ReferenceGenome::GRCh38);
+        } else if header_text.contains("AS:GRCh37") || header_text.contains("GCA_000001405.1") {
+            return Some(ReferenceGenome::GRCh37);
+        }
+
+        // Check for CHM13v2 using multiple strategies
+        if header_text.contains("AS:CHM13") || header_text.contains("GCA_009914755.4") {
+            return Some(ReferenceGenome::CHM13v2);
+        }
+
+        // Check for CHM13v2 by characteristic patterns in UR field
+        if header_text.contains("chm13") || header_text.contains("CHM13") || header_text.contains("t2t") || header_text.contains("T2T") {
+            return Some(ReferenceGenome::CHM13v2);
+        }
+
+        // Check for CHM13v2 by characteristic chr1 length (248387328 bp)
+        // and MD5 checksum
+        if header_text.contains("SN:chr1") && header_text.contains("LN:248387328") {
+            if header_text.contains("M5:e469247288ceb332aee524caec92bb22") {
                 return Some(ReferenceGenome::CHM13v2);
-            } else if header_text.contains("AS:GRCh37") || header_text.contains("GCA_000001405.1") {
-                return Some(ReferenceGenome::GRCh37);
             }
         }
+
+        // Fallback: Check for characteristic GRCh38 chr1 length (248956422 bp)
+        if header_text.contains("SN:chr1") && header_text.contains("LN:248956422") {
+            return Some(ReferenceGenome::GRCh38);
+        }
+
+        // Fallback: Check for characteristic GRCh37 chr1 length (249250621 bp)
+        if header_text.contains("SN:1") && header_text.contains("LN:249250621") {
+            return Some(ReferenceGenome::GRCh37);
+        }
+
         None
     }
+
     pub fn name(&self) -> &'static str {
         match self {
             ReferenceGenome::GRCh38 => "GRCh38",
