@@ -3,22 +3,22 @@ use super::types::{
     ContigQualityStats, ContigStateCounts,
 };
 use super::{detect_aligner, utils, BamStats, CalledState};
-use crate::haplogroup::types::ReferenceGenome;
-use crate::export::formats::coverage::{
-    CoverageExport, CoverageSummary, ContigExport, StateDistribution,
-    QualityMetrics, HistogramBin,
-};
 use crate::callable_loci::profilers::callable_profiler::CallableProfiler;
 use crate::callable_loci::profilers::contig_profiler::ContigProfiler;
+use crate::export::formats::coverage::{
+    ContigExport, CoverageExport, CoverageSummary, QualityMetrics,
+    StateDistribution,
+};
+use crate::haplogroup::types::ReferenceGenome;
 
+use rust_htslib::bam;
+use rust_htslib::bam::Read;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
-use rust_htslib::bam;
-use rust_htslib::bam::Read;
+use std::sync::Arc;
 
 pub fn collect_analysis_report(
     bam_file: &str,
@@ -133,7 +133,7 @@ pub fn build_coverage_export(
 ) -> Result<CoverageExport, Box<dyn std::error::Error>> {
     use crate::callable_loci::types::CalledState;
     use crate::export::formats::coverage::{
-        CoverageExport, CoverageSummary, ContigExport, StateDistribution, QualityMetrics,
+        ContigExport, CoverageExport, CoverageSummary, QualityMetrics, StateDistribution,
     };
     use std::sync::Arc;
 
