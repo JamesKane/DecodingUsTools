@@ -129,7 +129,7 @@ pub fn collect_analysis_report(
 pub fn build_coverage_export(
     contig_stats: &HashMap<usize, ContigProfiler>,
     counter: &CallableProfiler,
-    _bam_stats: &BamStats,
+    bam_stats: &BamStats,
 ) -> Result<CoverageExport, Box<dyn Error>> {
     use crate::callable_loci::types::CalledState;
     use crate::export::formats::coverage::{
@@ -204,6 +204,9 @@ pub fn build_coverage_export(
     };
 
     let summary = CoverageSummary {
+        aligner: bam_stats.aligner().to_string(),
+        reference_build: bam_stats.reference_build().to_string(),
+        read_length: bam_stats.average_read_length(),
         total_bases,
         callable_bases,
         callable_percentage: if total_bases > 0 {

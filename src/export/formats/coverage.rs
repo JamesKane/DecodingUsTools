@@ -107,6 +107,9 @@ mod arc_serde {
 /// This struct is useful for summarizing and reporting coverage-related results in genomics pipelines.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CoverageSummary {
+    pub aligner: String,
+    pub reference_build: String,
+    pub read_length: usize,
     pub total_bases: u64,
     pub callable_bases: u64,
     pub callable_percentage: f64,

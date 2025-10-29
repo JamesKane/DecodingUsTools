@@ -1,8 +1,9 @@
-use rust_htslib::bam::{self, Read};
-use std::collections::HashMap;
-use indicatif::{ProgressBar, ProgressStyle};
 use crate::utils::bam_reader::BamReaderFactory;
 use crate::utils::progress_manager::ProgressManager;
+use rust_htslib::bam::Read;
+use std::collections::HashMap;
+use crate::callable_loci::detect_aligner;
+use crate::haplogroup::types::ReferenceGenome;
 
 pub struct BamStats {
     read_count: usize,
@@ -13,6 +14,8 @@ pub struct BamStats {
     pub(crate) max_samples: usize,
     length_distribution: HashMap<usize, usize>,
     insert_size_distribution: HashMap<i64, usize>,
+    aligner: String,
+    reference_build: String,
 }
 
 impl BamStats {
@@ -26,12 +29,20 @@ impl BamStats {
             max_samples,
             length_distribution: HashMap::new(),
             insert_size_distribution: HashMap::new(),
+            aligner: String::new(),
+            reference_build: String::new(),
         }
     }
 
     pub fn collect_stats(&mut self, bam_path: &str, reference_path: Option<&str>, progress_mgr: &ProgressManager) -> Result<(), Box<dyn std::error::Error>> {
 
         let mut bam = BamReaderFactory::open(bam_path, reference_path)?;
+        let header = bam.header().clone();
+
+        self.aligner = detect_aligner(&header);
+        self.reference_build = ReferenceGenome::from_header(&header)
+            .map(|g| g.name().to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
 
         let progress = progress_mgr.add_spinner("Collecting BAM statistics...");
 
@@ -113,5 +124,25 @@ impl BamStats {
         }
 
         stats
+    }
+
+    pub fn aligner(&self) -> &str {
+        &self.aligner
+    }
+
+    pub fn reference_build(&self) -> &str {
+        &self.reference_build
+    }
+
+    pub fn average_read_length(&self) -> usize {
+        if self.read_count > 0 {
+            self.length_distribution
+                .iter()
+                .max_by_key(|(_, &count)| count)
+                .map(|(length, _)| *length)
+                .unwrap_or(0)
+        } else {
+            0
+        }
     }
 }
