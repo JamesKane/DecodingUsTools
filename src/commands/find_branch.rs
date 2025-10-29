@@ -1,4 +1,5 @@
-use crate::cli;
+use std::error::Error;
+use crate::cli::TreeProvider;
 use crate::haplogroup;
 use crate::utils::cache::TreeType;
 
@@ -8,17 +9,18 @@ pub fn run(
     output_file: String,
     min_depth: u32,
     min_quality: u8,
-    provider: cli::TreeProvider,
+    provider: TreeProvider,
     show_snps: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+    tree_type: TreeType,
+) -> Result<(), Box<dyn Error>> {
     haplogroup::analyze_haplogroup(
         bam_file,
         reference_file,
         output_file,
         min_depth,
         min_quality,
-        TreeType::MTDNA,
+        tree_type,
         provider,
-        show_snps
+        show_snps,
     )
 }

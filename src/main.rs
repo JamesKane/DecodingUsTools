@@ -15,6 +15,7 @@ use clap::Parser;
 use crate::bam_fixer::BamFixer;
 use anyhow::Context;
 use std::error::Error;
+use crate::utils::cache::TreeType;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = cli::Args::parse();
@@ -61,7 +62,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             provider,
             show_snps,
         } => {
-            commands::find_y_branch::run(
+            commands::find_branch::run(
                 bam_file,
                 reference_file,
                 output_file,
@@ -69,6 +70,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 min_quality,
                 provider,
                 show_snps,
+                TreeType::YDNA
             )?;
         }
         cli::Commands::FindMtBranch {
@@ -80,7 +82,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             provider,
             show_snps,
         } => {
-            commands::find_mt_branch::run(
+            commands::find_branch::run(
                 bam_file,
                 reference_file,
                 output_file,
@@ -88,6 +90,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 min_quality,
                 provider,
                 show_snps,
+                TreeType::MTDNA
             )?;
         }
         cli::Commands::FixSurjectedBam {
