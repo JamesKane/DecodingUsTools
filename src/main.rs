@@ -14,6 +14,8 @@ mod api;
 mod types;
 
 use clap::Parser;
+use std::fs::File;
+use serde_json;
 
 use crate::bam_fixer::BamFixer;
 use anyhow::Context;
@@ -63,6 +65,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .build()
                 .unwrap();
             let result = rt.block_on(analyzer.analyze(input))?;
+            let summary_file = File::create("summary.json")?;
+            serde_json::to_writer_pretty(summary_file, &result)?;
         }
         cli::Commands::FindYBranch {
             bam_file,
