@@ -1,5 +1,5 @@
 use rust_htslib::bam::Read;
-use crate::haplogroup::types::{ReferenceGenome};
+use crate::types::{ReferenceGenome};
 use crate::utils::cache::TreeType;
 
 pub fn validate_reference<R: Read>(

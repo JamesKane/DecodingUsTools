@@ -9,7 +9,7 @@ use crate::export::formats::coverage::{
     ContigExport, CoverageExport, CoverageSummary, QualityMetrics,
     StateDistribution,
 };
-use crate::haplogroup::types::ReferenceGenome;
+use crate::types::ReferenceGenome;
 
 use crate::utils::bam_reader::BamReaderFactory;
 use rust_htslib::bam::Read;
@@ -243,8 +243,10 @@ pub fn build_coverage_export(
     })
 }
 
+
 pub fn write_html_report(
-    report: &BamAnalysisReport,
+    export: &CoverageExport,
+    bam_stats: &BamStats,
     output_path: &str,
 ) -> Result<(), Box<dyn Error>> {
     let mut html = String::new();
@@ -253,10 +255,10 @@ pub fn write_html_report(
     html.push_str(include_str!("templates/report_header.html"));
 
     // Add BAM Statistics section
-    write_bam_stats_section(&mut html, report)?;
+    write_bam_stats_section(&mut html, export, bam_stats)?;
 
     // Add Contig Analysis section
-    write_contig_analysis_section(&mut html, &report.contig_analyses)?;
+    write_contig_analysis_section(&mut html, &export.contigs)?;
 
     // Add footer template and scripts
     html.push_str(include_str!("templates/report_footer.html"));
@@ -270,33 +272,55 @@ pub fn write_html_report(
 
 fn write_bam_stats_section(
     html: &mut String,
-    report: &BamAnalysisReport,
+    export: &CoverageExport,
+    bam_stats: &BamStats,
 ) -> Result<(), Box<dyn Error>> {
     html.push_str(r#"<section class='stats-box'>"#);
     html.push_str(&format!(
         r#"<h2>BAM Statistics <span class='sample-note'>(based on first {} reads)</span></h2>"#,
-        report.metadata.sample_count
+        bam_stats.max_samples
     ));
 
     html.push_str("<dl>");
     html.push_str(&format!(
         r#"<dt>Reference Build</dt><dd>{}</dd>
         <dt>Aligner</dt><dd>{}</dd>
-        <dt>Average read length</dt><dd>{:.1} bp</dd>
-        <dt>Paired reads</dt><dd>{:.1}%</dd>
-        <dt>Average insert size</dt><dd>{:.1} bp</dd>"#,
-        report.metadata.reference_build,
-        report.metadata.aligner,
-        report.bam_stats.average_read_length,
-        report.bam_stats.paired_percentage,
-        report.bam_stats.average_insert_size
+        <dt>Average read length</dt><dd>{} bp</dd>
+        <dt>Total Bases</dt><dd>{}</dd>
+        <dt>Callable Bases</dt><dd>{}</dd>
+        <dt>Callable Percentage</dt><dd>{:.2}%</dd>
+        <dt>Average Depth</dt><dd>{:.2}×</dd>
+        <dt>Contigs Analyzed</dt><dd>{}</dd>"#,
+        export.summary.reference_build,
+        export.summary.aligner,
+        export.summary.read_length,
+        export.summary.total_bases,
+        export.summary.callable_bases,
+        export.summary.callable_percentage,
+        export.summary.average_depth,
+        export.summary.contigs_analyzed
+    ));
+    html.push_str("</dl>");
+
+    // Add quality metrics section
+    html.push_str("<h3>Quality Metrics</h3><dl>");
+    html.push_str(&format!(
+        r#"<dt>Average MapQ</dt><dd>{:.1}</dd>
+        <dt>Average BaseQ</dt><dd>{:.1}</dd>
+        <dt>Q30 Percentage</dt><dd>{:.2}%</dd>"#,
+        export.quality_metrics.average_mapq,
+        export.quality_metrics.average_baseq,
+        export.quality_metrics.q30_percentage
     ));
     html.push_str("</dl></section>");
 
     Ok(())
 }
 
-fn write_contig_analysis_section(html: &mut String, contigs: &[ContigAnalysis]) -> Result<(), Box<dyn Error>> {
+fn write_contig_analysis_section(
+    html: &mut String,
+    contigs: &[ContigExport],
+) -> Result<(), Box<dyn Error>> {
     html.push_str(r#"<div class="contig-analysis">"#);
 
     // Add the contig selector
@@ -332,7 +356,7 @@ fn write_contig_analysis_section(html: &mut String, contigs: &[ContigAnalysis]) 
 
 fn write_contig_panel(
     html: &mut String,
-    contig: &ContigAnalysis,
+    contig: &ContigExport,
     index: usize,
 ) -> Result<(), Box<dyn Error>> {
     html.push_str(&format!(
@@ -345,47 +369,22 @@ fn write_contig_panel(
     html.push_str("<table>");
     html.push_str("<thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>");
 
-    add_table_row(html, "Unique Reads", contig.coverage_stats.unique_reads);
-    add_table_row(
-        html,
-        "Reference N",
-        contig.coverage_stats.state_counts.reference_n,
-    );
-    add_table_row(
-        html,
-        "No Coverage",
-        contig.coverage_stats.state_counts.no_coverage,
-    );
-    add_table_row(
-        html,
-        "Low Coverage",
-        contig.coverage_stats.state_counts.low_coverage,
-    );
-    add_table_row(
-        html,
-        "Excessive Coverage",
-        contig.coverage_stats.state_counts.excessive_coverage,
-    );
-    add_table_row(
-        html,
-        "Poor Mapping Quality",
-        contig.coverage_stats.state_counts.poor_mapping_quality,
-    );
-    add_table_row(
-        html,
-        "Callable",
-        contig.coverage_stats.state_counts.callable,
-    );
+    add_table_row(html, "Length", format!("{} bp", contig.length));
+    add_table_row(html, "Unique Reads", contig.unique_reads);
+    add_table_row(html, "Covered Bases", contig.covered_bases);
     add_table_row(
         html,
         "Coverage Percent",
-        format!("{:.2}%", contig.coverage_stats.coverage_percent),
+        format!("{:.2}%", contig.coverage_percent),
     );
     add_table_row(
         html,
         "Average Depth",
-        format!("{:.2}×", contig.coverage_stats.average_depth),
+        format!("{:.2}×", contig.average_depth),
     );
+
+    // Quality stats
+    html.push_str(r#"<tr><td colspan="2" style="font-weight: bold; background-color: #f5f5f5;">Quality Metrics</td></tr>"#);
     add_table_row(
         html,
         "Average MapQ",
@@ -396,11 +395,34 @@ fn write_contig_panel(
         "Average BaseQ",
         format!("{:.1}", contig.quality_stats.average_baseq),
     );
+    add_table_row(
+        html,
+        "Q30 Percentage",
+        format!("{:.2}%", contig.quality_stats.q30_percentage),
+    );
+
+    // State distribution
+    html.push_str(r#"<tr><td colspan="2" style="font-weight: bold; background-color: #f5f5f5;">State Distribution</td></tr>"#);
+    add_table_row(html, "Reference N", contig.state_distribution.ref_n);
+    add_table_row(html, "Callable", contig.state_distribution.callable);
+    add_table_row(html, "No Coverage", contig.state_distribution.no_coverage);
+    add_table_row(html, "Low Coverage", contig.state_distribution.low_coverage);
+    add_table_row(
+        html,
+        "Excessive Coverage",
+        contig.state_distribution.excessive_coverage,
+    );
+    add_table_row(
+        html,
+        "Poor Mapping Quality",
+        contig.state_distribution.poor_mapping_quality,
+    );
 
     html.push_str("</tbody></table>");
 
     // Add coverage plot if available
-    if let Some(plot_path) = &contig.coverage_plot {
+    let plot_path = format!("{}_coverage.svg", contig.name);
+    if Path::new(&plot_path).exists() {
         html.push_str(&format!(
             r#"<figure class='coverage-plot'>
                 <img src="{}" alt="Coverage distribution for {}" loading="lazy">

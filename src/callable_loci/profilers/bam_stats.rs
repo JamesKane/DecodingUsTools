@@ -3,7 +3,7 @@ use crate::utils::progress_manager::ProgressManager;
 use rust_htslib::bam::Read;
 use std::collections::HashMap;
 use crate::callable_loci::detect_aligner;
-use crate::haplogroup::types::ReferenceGenome;
+use crate::types::ReferenceGenome;
 
 pub struct BamStats {
     read_count: usize,

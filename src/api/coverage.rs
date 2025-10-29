@@ -95,13 +95,7 @@ impl CoverageAnalyzer {
             .map_err(|e| crate::api::ApiError::from(e))?;
 
         // Generate HTML report
-        let report = callable_loci::report::collect_analysis_report(
-            &input.bam_file,
-            &bam_stats,
-            &contig_stats,
-            &counter,
-        ).map_err(|e| crate::api::ApiError::from(e.to_string()))?;
-        callable_loci::report::write_html_report(&report, &output_summary)
+        callable_loci::report::write_html_report(&export, &bam_stats, &output_summary)
             .map_err(|e| crate::api::ApiError::from(e.to_string()))?;
 
         Ok(CoverageOutput {
