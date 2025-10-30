@@ -168,6 +168,8 @@ fn detect_aligner(header: &HeaderView) -> String {
         "Bowtie2".to_string()
     } else if header_lower.contains("star") {
         "STAR".to_string()
+    } else if header_lower.contains("@pg\tid:pbmm2") {
+        "pbmm2".to_string()
     } else {
         "Unknown".to_string()
     }
