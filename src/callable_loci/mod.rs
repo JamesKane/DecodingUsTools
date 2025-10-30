@@ -152,10 +152,14 @@ fn detect_aligner(header: &HeaderView) -> String {
     let header_lower = header_text.to_lowercase();
 
     // Check for common aligners in header
-    if header_lower.contains("@pg\tid:bwa") {
+    if header_lower.contains("@pg\tid:bwa-mem2") {
+        "BWA-MEM2".to_string()
+    } else if header_lower.contains("@pg\tid:bwa") {
         "BWA".to_string()
     } else if header_lower.contains("@pg\tid:minimap2") {
         "minimap2".to_string()
+    } else if header_lower.contains("@pg\tid:pbmm2") {
+        "pbmm2".to_string()
     } else if header_lower.contains("@pg\tid:bowtie2") {
         "Bowtie2".to_string()
     } else if header_lower.contains("@pg\tid:star") {
@@ -168,8 +172,6 @@ fn detect_aligner(header: &HeaderView) -> String {
         "Bowtie2".to_string()
     } else if header_lower.contains("star") {
         "STAR".to_string()
-    } else if header_lower.contains("@pg\tid:pbmm2") {
-        "pbmm2".to_string()
     } else {
         "Unknown".to_string()
     }
