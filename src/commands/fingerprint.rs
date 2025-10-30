@@ -1,7 +1,7 @@
-use crate::types::Region;
-use crate::sequence_processor::core::SequenceReader;
 use crate::sequence_processor::collectors::fingerprint::processor::FastFingerprint;
+use crate::sequence_processor::core::SequenceReader;
 use crate::sequence_processor::readers::{BamReader, FastqReader, GamReader};
+use crate::types::Region;
 use crate::utils::progress_bar_builder::ProgressBarBuilder;
 use anyhow::Result;
 use std::path::{Path, PathBuf};

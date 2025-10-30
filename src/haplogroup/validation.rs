@@ -1,6 +1,6 @@
-use rust_htslib::bam::Read;
-use crate::types::{ReferenceGenome};
+use crate::types::ReferenceGenome;
 use crate::utils::cache::TreeType;
+use rust_htslib::bam::Read;
 
 pub fn validate_reference<R: Read>(
     bam: &R,

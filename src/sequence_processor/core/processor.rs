@@ -1,5 +1,5 @@
-use super::stats::ProcessingStats;
 use super::sequence::Sequence;
+use super::stats::ProcessingStats;
 use anyhow::Result;
 
 pub trait SequenceProcessor: Send + Clone + 'static {

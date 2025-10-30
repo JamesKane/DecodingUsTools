@@ -1,13 +1,13 @@
+use super::utils::generate_hexdigest;
 use crate::cli::Region;
-use crate::sequence_processor::core::{ProcessingStats, Sequence, SequenceProcessor};
 use crate::sequence_processor::collectors::base::StatsCollector;
+use crate::sequence_processor::core::{ProcessingStats, Sequence, SequenceProcessor};
 use crate::utils::progress_bar_builder::ProgressBarBuilder;
 use anyhow::Result;
 use indicatif::ProgressBar;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use super::utils::generate_hexdigest;
 
 #[derive(Debug, Clone)]
 pub struct FastFingerprint {

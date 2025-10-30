@@ -1,8 +1,8 @@
+use crate::cli;
 use crate::haplogroup::types::{Haplogroup, HaplogroupResult, LociType, Locus};
 use crate::utils::cache::{TreeCache, TreeType};
-use std::collections::HashMap;
 use indicatif::{ProgressBar, ProgressStyle};
-use crate::cli;
+use std::collections::HashMap;
 
 pub(crate) fn load_tree(tree_type: TreeType, provider: crate::cli::TreeProvider) -> Result<Haplogroup, Box<dyn std::error::Error>> {
     let progress = ProgressBar::new_spinner();

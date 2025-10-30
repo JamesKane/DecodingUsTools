@@ -1,7 +1,7 @@
-use std::error::Error;
 use crate::cli::TreeProvider;
 use crate::haplogroup;
 use crate::utils::cache::TreeType;
+use std::error::Error;
 
 pub fn run(
     bam_file: String,

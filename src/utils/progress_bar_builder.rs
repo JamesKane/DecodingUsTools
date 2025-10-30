@@ -1,5 +1,5 @@
-use indicatif::{ProgressBar, ProgressStyle};
 use anyhow::Result;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
 
 pub(crate) struct ProgressBarBuilder {

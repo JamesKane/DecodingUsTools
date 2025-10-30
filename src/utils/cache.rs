@@ -1,6 +1,6 @@
+use crate::config::config::Config;
 use crate::haplogroup::types::HaplogroupTree;
 pub(crate) use crate::vendor::TreeProvider;
-use crate::config::config::Config;
 use chrono::{Datelike, Local};
 use directories::ProjectDirs;
 use indicatif::{ProgressBar, ProgressStyle};

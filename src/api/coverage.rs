@@ -4,20 +4,20 @@
 //!
 //! This struct supports emitting progress events via a callback function, making it suitable for
 //! integration into APIs or CLI tools that require progress reporting.
-use crate::callable_loci;
-use crate::export::formats::coverage::CoverageExport;
 use crate::api::{ApiResult, ProgressCallback, ProgressEvent};
+use crate::callable_loci;
 use crate::callable_loci::profilers::{
     bam_stats::BamStats,
     callable_profiler::CallableProfiler,
     contig_profiler::ContigProfiler,
 };
+use crate::export::formats::coverage::CoverageExport;
+use crate::utils::bam_reader::BamReaderFactory;
+use crate::utils::progress_manager::ProgressManager;
+use rust_htslib::bam::Read;
 use rust_htslib::{bam, faidx};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use rust_htslib::bam::Read;
-use crate::utils::bam_reader::BamReaderFactory;
-use crate::utils::progress_manager::ProgressManager;
 
 pub struct CoverageAnalyzer {
     progress_callback: Option<ProgressCallback>,

@@ -1,8 +1,8 @@
 use crate::sequence_processor::collectors::base::StatsCollector;
 use crate::sequence_processor::core::{ProcessingStats, Sequence, SequenceProcessor};
+use anyhow::Result;
 use indicatif::ProgressBar;
 use std::sync::Arc;
-use anyhow::Result;
 
 /// A processor that handles sequences base-by-base using a StatsCollector
 #[derive(Clone)]

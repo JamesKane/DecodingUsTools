@@ -1,7 +1,7 @@
+use crate::cli;
 use crate::haplogroup::types::{Haplogroup, HaplogroupTree};
 use crate::utils::cache::TreeType;
 use std::error::Error;
-use crate::cli;
 
 pub(crate) mod ftdna;
 pub mod decoding_us;

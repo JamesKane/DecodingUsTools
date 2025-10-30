@@ -1,12 +1,12 @@
-use std::io::Write;
-use std::path::Path;
-use anyhow::{Context, Result};
-use indicatif::ProgressBar;
-use sha2::{Digest, Sha256};
-use seahash::SeaHasher;
-use std::hash::Hasher;
 use super::processor::FastFingerprint;
 use crate::utils::progress_bar_builder::ProgressBarBuilder;
+use anyhow::{Context, Result};
+use indicatif::ProgressBar;
+use seahash::SeaHasher;
+use sha2::{Digest, Sha256};
+use std::hash::Hasher;
+use std::io::Write;
+use std::path::Path;
 
 pub(crate) fn hash_kmer(ksize: usize, kmer: &[u8]) -> u64 {
     let mut canonical = Vec::with_capacity(ksize);

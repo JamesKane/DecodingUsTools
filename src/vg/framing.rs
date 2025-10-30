@@ -6,7 +6,7 @@
 //! can optionally be a type tag string.
 
 use anyhow::{anyhow, Result};
-use std::io::{Read, BufRead};
+use std::io::{BufRead, Read};
 
 /// Reads a varint64 from a reader
 fn read_varint64<R: Read>(reader: &mut R) -> Result<u64> {

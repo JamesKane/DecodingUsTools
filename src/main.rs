@@ -14,14 +14,14 @@ mod api;
 mod types;
 
 use clap::Parser;
-use std::fs::File;
 use serde_json;
+use std::fs::File;
 
+use crate::api::coverage::{CoverageAnalyzer, CoverageInput};
 use crate::bam_fixer::BamFixer;
+use crate::utils::cache::TreeType;
 use anyhow::Context;
 use std::error::Error;
-use crate::api::coverage::{CoverageAnalyzer, CoverageInput};
-use crate::utils::cache::TreeType;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = cli::Args::parse();

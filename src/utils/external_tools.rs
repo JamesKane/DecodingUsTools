@@ -1,5 +1,5 @@
+use anyhow::{Context, Result};
 use std::process::Command;
-use anyhow::{Result, Context};
 
 pub fn check_samtools() -> Result<()> {
     Command::new("samtools")

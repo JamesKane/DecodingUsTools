@@ -2,8 +2,8 @@ pub mod client;
 pub mod auth;
 pub mod records;
 
-use serde::{Deserialize, Serialize};
 use crate::export::AnalysisExport;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub struct PdsConfig {

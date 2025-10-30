@@ -1,4 +1,5 @@
 use crate::sequence_processor::core::*;
+use crate::sequence_processor::threading::{merge_processors, ThreadPool};
 use crate::vg::framing::GroupIterator;
 use anyhow::Result;
 use indicatif::ProgressBar;
@@ -6,7 +7,6 @@ use niffler::get_reader;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
-use crate::sequence_processor::threading::{merge_processors, ThreadPool};
 
 pub struct GamReader {
     reader: BufReader<Box<dyn std::io::Read>>,

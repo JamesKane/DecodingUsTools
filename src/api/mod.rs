@@ -1,7 +1,7 @@
 pub mod coverage;
 
-use std::sync::Arc;
 use serde::Serialize;
+use std::sync::Arc;
 use thiserror::Error;
 
 /// Progress callback for GUI updates
