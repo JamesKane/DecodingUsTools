@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rust_htslib::bam;
 use crate::callable_loci::options::CallableOptions;
@@ -16,6 +17,7 @@ pub struct ContigProfiler {
     pub n_selected_reads: u32,
     pub progress_bar: ProgressBar,
     options: CallableOptions,
+    seen_read_names: HashSet<Vec<u8>>,
 }
 
 impl ContigProfiler {
@@ -39,6 +41,7 @@ impl ContigProfiler {
             n_selected_reads: 0,
             progress_bar,
             options,
+            seen_read_names: HashSet::new(),
         }
     }
 
@@ -53,7 +56,11 @@ impl ContigProfiler {
             let record = aln.record();
             let mapq = record.mapq();
 
-            self.n_reads += 1;
+            // Count unique reads by tracking read names
+            let read_name = record.qname().to_vec();
+            if self.seen_read_names.insert(read_name) {
+                self.n_reads += 1;
+            }
 
             if mapq >= self.options.min_mapping_quality {
                 if let Some(qpos) = aln.qpos() {
