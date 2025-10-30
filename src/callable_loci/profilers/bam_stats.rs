@@ -361,6 +361,14 @@ impl BamStats {
 
     pub fn average_read_length(&self) -> usize {
         if self.read_count > 0 {
+            self.total_read_length / self.read_count
+        } else {
+            0
+        }
+    }
+
+    pub fn modal_read_length(&self) -> usize {
+        if self.read_count > 0 {
             self.length_distribution
                 .iter()
                 .max_by_key(|(_, &count)| count)
