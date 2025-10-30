@@ -29,6 +29,7 @@ pub struct CoverageExport {
     #[serde(with = "arc_serde")]
     pub contigs: Arc<Vec<ContigExport>>,
     pub quality_metrics: QualityMetrics,
+    pub total_unique_reads: u64,
 }
 
 // Implementation of Clone using Arc for the non-cloneable Vec<ContigExport>
@@ -38,6 +39,7 @@ impl Clone for CoverageExport {
             summary: self.summary.clone(),
             contigs: Arc::clone(&self.contigs),
             quality_metrics: self.quality_metrics.clone(),
+            total_unique_reads: self.total_unique_reads,
         }
     }
 }

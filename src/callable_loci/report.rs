@@ -31,6 +31,7 @@ pub fn build_coverage_export(
     let mut total_baseq = 0f64;
     let mut q30_bases = 0u64;
     let mut total_quality_positions = 0u64;
+    let mut total_unique_reads = 0u64;
 
     let mut contig_exports = Vec::new();
 
@@ -60,6 +61,7 @@ pub fn build_coverage_export(
         total_baseq += quality_stats.average_baseq * stats.length as f64;
         q30_bases += (quality_stats.q30_percentage / 100.0 * stats.length as f64) as u64;
         total_quality_positions += stats.length as u64;
+        total_unique_reads += stats.n_reads as u64;
 
         let state_distribution = StateDistribution {
             ref_n: counts[CalledState::REF_N as usize],
@@ -128,6 +130,7 @@ pub fn build_coverage_export(
         summary,
         contigs: Arc::new(contig_exports),
         quality_metrics,
+        total_unique_reads
     })
 }
 
@@ -175,31 +178,32 @@ fn write_bam_stats_section(
             <dt>Aligner</dt><dd>{}</dd>
             <dt>Sequencing Platform</dt><dd>{}</dd>
             <dt>Average read length</dt><dd>{} bp</dd>
+            <dt>Total Unique Reads</dt><dd>{}</dd>
             <dt>Total Bases</dt><dd>{}</dd>
-            <dt>Callable Bases</dt><dd>{}</dd>"#,
+            "#,
         export.summary.reference_build,
         export.summary.aligner,
         export.summary.sequencing_platform,
         export.summary.read_length,
-        export.summary.total_bases,
-        export.summary.callable_bases
+        export.total_unique_reads,
+        export.summary.total_bases
     ));
     html.push_str("</dl>");
 
     html.push_str("<dl>");
     html.push_str(&format!(
-        r#"<dt>Callable Percentage</dt><dd>{:.2}%</dd>
+        r#"<dt>Callable Bases</dt><dd>{}</dd>
+            <dt>Callable Percentage</dt><dd>{:.2}%</dd>
             <dt>Average Depth</dt><dd>{:.2}×</dd>
             <dt>Contigs Analyzed</dt><dd>{}</dd>
             <dt>Average MapQ</dt><dd>{:.1}</dd>
-            <dt>Average BaseQ</dt><dd>{:.1}</dd>
-            <dt>Q30 Percentage</dt><dd>{:.2}%</dd>"#,
+            <dt>Average BaseQ</dt><dd>{:.1}</dd>"#,
+        export.summary.callable_bases,
         export.summary.callable_percentage,
         export.summary.average_depth,
         export.summary.contigs_analyzed,
         export.quality_metrics.average_mapq,
-        export.quality_metrics.average_baseq,
-        export.quality_metrics.q30_percentage
+        export.quality_metrics.average_baseq
     ));
     html.push_str("</dl>");
     html.push_str("</div>");
