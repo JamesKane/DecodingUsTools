@@ -1,8 +1,8 @@
-use super::{BamStats, CalledState};
+use super::BamStats;
 use crate::callable_loci::profilers::callable_profiler::CallableProfiler;
 use crate::callable_loci::profilers::contig_profiler::ContigProfiler;
 use crate::export::formats::coverage::{
-    ContigExport, CoverageExport, CoverageSummary, QualityMetrics, StateDistribution,
+    ContigExport, CoverageExport,
 };
 
 use std::collections::HashMap;
@@ -10,7 +10,6 @@ use std::error::Error;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
-use std::sync::Arc;
 
 /// Builds a structured CoverageExport from analysis results
 pub fn build_coverage_export(

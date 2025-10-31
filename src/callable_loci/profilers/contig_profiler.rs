@@ -1,5 +1,4 @@
 use crate::callable_loci::options::CallableOptions;
-use crate::callable_loci::types::ContigStateCounts;
 use crate::utils::progress_manager::ProgressManager;
 use indicatif::ProgressBar;
 use rust_htslib::bam;

@@ -4,7 +4,6 @@ pub(crate) mod report;
 pub(crate) mod types;
 mod utils;
 
-use crate::callable_loci::types::CalledState;
 pub use options::CallableOptions;
 use profilers::{
     bam_stats::BamStats, callable_profiler::CallableProfiler, contig_profiler::ContigProfiler,

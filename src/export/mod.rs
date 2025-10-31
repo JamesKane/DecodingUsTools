@@ -7,7 +7,7 @@ use crate::export::formats::fingerprint::FingerprintExport;
 use crate::export::formats::haplogroup::HaplogroupExport;
 use chrono::{DateTime, Utc};
 use serde::de::{Deserialize as DeserializeTrait, Deserializer, Error};
-use serde::ser::{Serialize as SerializeTrait, Serializer};
+use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 
 /// Root structure for all exports - AT Protocol compatible
