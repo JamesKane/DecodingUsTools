@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::types::ReferenceGenome;
 
@@ -17,6 +18,8 @@ use omics::coordinate::interval::interbase::Interval;
 pub struct Liftover {
     // Path to cached chain file; None means identity mapping
     chain_path: Option<PathBuf>,
+    // Cached liftover machine built once per instance; None for identity mapping
+    machine: Option<Arc<liftover::machine::Machine>>,
     // Retain legacy fields for compatibility with existing code paths/logging; kept empty
     chains_by_query: HashMap<String, Vec<()>>,
     intervals_by_query: HashMap<String, Vec<()>>,
@@ -25,19 +28,18 @@ pub struct Liftover {
 impl Liftover {
     pub fn load_or_fetch(source: ReferenceGenome, target: ReferenceGenome) -> Result<Self, Box<dyn std::error::Error>> {
         if source == target {
-            return Ok(Liftover { chain_path: None, chains_by_query: HashMap::new(), intervals_by_query: HashMap::new() });
+            return Ok(Liftover { chain_path: None, machine: None, chains_by_query: HashMap::new(), intervals_by_query: HashMap::new() });
         }
 
         let verbose = std::env::var("DECODINGUS_VERBOSE_LIFTOVER").ok().filter(|v| !v.is_empty() && v != "0").is_some();
         let refresh = std::env::var("DECODINGUS_LIFTOVER_REFRESH").ok().filter(|v| !v.is_empty() && v != "0").is_some();
 
-        // Overrides: explicit local file or URL
-        if let Ok(path) = std::env::var("DECODINGUS_LIFTOVER_FILE") {
+        // Resolve chain file path (overrides first)
+        let chosen_path: PathBuf = if let Ok(path) = std::env::var("DECODINGUS_LIFTOVER_FILE") {
             let p = PathBuf::from(&path);
             if verbose { eprintln!("[liftover] override: using local chain file {}", p.display()); }
-            return Ok(Liftover { chain_path: Some(p), chains_by_query: HashMap::new(), intervals_by_query: HashMap::new() });
-        }
-        if let Ok(url) = std::env::var("DECODINGUS_LIFTOVER_URL") {
+            p
+        } else if let Ok(url) = std::env::var("DECODINGUS_LIFTOVER_URL") {
             // Sanitize URL into a cache file name
             let mut tag = url.replace(|c: char| !c.is_ascii_alphanumeric(), "_");
             if tag.len() > 80 { tag.truncate(80); }
@@ -49,80 +51,62 @@ impl Liftover {
                 if verbose { eprintln!("[liftover] override: downloading {} -> {:?}", url, path); }
                 download_chain(&url, &path)?;
             } else if verbose { eprintln!("[liftover] override: using cached {:?}", path); }
-            return Ok(Liftover { chain_path: Some(path), chains_by_query: HashMap::new(), intervals_by_query: HashMap::new() });
-        }
-
-        let candidates = chain_url_candidates(&source, &target);
-        if candidates.is_empty() {
-            return Err(format!("No chain mapping known from {} to {}", source.name(), target.name()).into());
-        }
-
-        let mut last_err: Option<Box<dyn std::error::Error>> = None;
-        for (url, cache_tag, filename) in candidates {
-            // add cache version salt to avoid stale semantics reuse
-            const CACHE_VERSION_SALT: &str = "v2";
-            // create a unique cache file name per candidate
-            let cache_name = format!("{}__{}__{}", CACHE_VERSION_SALT, cache_tag, filename);
-            let path = get_cache_path(cache_name)?;
-            if refresh {
-                let _ = fs::remove_file(&path);
+            path
+        } else {
+            let candidates = chain_url_candidates(&source, &target);
+            if candidates.is_empty() {
+                return Err(format!("No chain mapping known from {} to {}", source.name(), target.name()).into());
             }
-            if !is_cache_valid(&path) {
-                if verbose { eprintln!("[liftover] downloading chain: {} -> {:?}", url, path); }
-                if let Err(e) = download_chain(&url, &path) { last_err = Some(e); continue; }
-            } else if verbose {
-                eprintln!("[liftover] using cached chain: {:?}", path);
+            let mut chosen: Option<PathBuf> = None;
+            let mut last_err: Option<Box<dyn std::error::Error>> = None;
+            for (url, cache_tag, filename) in candidates {
+                const CACHE_VERSION_SALT: &str = "v2";
+                let cache_name = format!("{}__{}__{}", CACHE_VERSION_SALT, cache_tag, filename);
+                let path = get_cache_path(cache_name)?;
+                if refresh { let _ = fs::remove_file(&path); }
+                if !is_cache_valid(&path) {
+                    if verbose { eprintln!("[liftover] downloading chain: {} -> {:?}", url, path); }
+                    if let Err(e) = download_chain(&url, &path) { last_err = Some(e); continue; }
+                } else if verbose {
+                    eprintln!("[liftover] using cached chain: {:?}", path);
+                }
+                chosen = Some(path);
+                break;
             }
-            // We consider the first successfully cached file as usable
-            return Ok(Liftover { chain_path: Some(path), chains_by_query: HashMap::new(), intervals_by_query: HashMap::new() });
-        }
-        Err(last_err.unwrap_or_else(|| "Failed to load any liftover chain candidate".into()))
+            if let Some(p) = chosen { p } else { return Err(last_err.unwrap_or_else(|| "Failed to load any liftover chain candidate".into())); }
+        };
+
+        // Build liftover machine once
+        if verbose { eprintln!("[liftover] building liftover machine from {}", chosen_path.display()); }
+        let file = fs::File::open(&chosen_path)?;
+        let (reader, _comp) = niffler::get_reader(Box::new(file))?;
+        let buf = BufReader::new(reader);
+        let rdr = chain::Reader::new(buf);
+        let machine = liftover::machine::builder::Builder.try_build_from(rdr)?;
+        Ok(Liftover {
+            chain_path: Some(chosen_path),
+            machine: Some(Arc::new(machine)),
+            chains_by_query: HashMap::new(),
+            intervals_by_query: HashMap::new(),
+        })
     }
 
     /// Special identity liftover used for mitochondrial rCRS ↔ build-specific chrM when
     /// coordinate systems are effectively identical. Keeping a dedicated constructor allows
     /// us to switch to a proper mapping later if needed without touching call sites.
     pub fn identity() -> Self {
-        Liftover { chain_path: None, chains_by_query: HashMap::new(), intervals_by_query: HashMap::new() }
+        Liftover { chain_path: None, machine: None, chains_by_query: HashMap::new(), intervals_by_query: HashMap::new() }
     }
 
     /// Map a 1-based query position on a chromosome name to a 1-based target position.
     /// Returns None if the position cannot be mapped.
     pub fn map_pos(&self, query_chrom: &str, query_pos_1based: u32) -> Option<u32> {
         // Identity shortcut when no chains loaded
-        if self.chain_path.is_none() {
+        if self.machine.is_none() {
             return Some(query_pos_1based);
         }
-        let chain_path = self.chain_path.as_ref().unwrap();
-
+        let machine = self.machine.as_ref().unwrap();
         let verbose = std::env::var("DECODINGUS_VERBOSE_LIFTOVER").ok().filter(|v| !v.is_empty() && v != "0").is_some();
-
-        // Open chain file (gz or plain) using niffler for transparency ONCE
-        if verbose { eprintln!("[liftover] using chain file: {}", chain_path.display()); }
-        let file = match fs::File::open(chain_path) {
-            Ok(f) => f,
-            Err(e) => {
-                if verbose { eprintln!("[liftover] failed to open chain file: {}", e); }
-                return None;
-            }
-        };
-        let (reader, _comp) = match niffler::get_reader(Box::new(file)) {
-            Ok(t) => t,
-            Err(e) => {
-                if verbose { eprintln!("[liftover] failed to create decompressor: {}", e); }
-                return None;
-            }
-        };
-        let buf = BufReader::new(reader);
-        let rdr = chain::Reader::new(buf);
-        // Build liftover machine
-        let machine = match liftover::machine::builder::Builder.try_build_from(rdr) {
-            Ok(m) => m,
-            Err(e) => {
-                if verbose { eprintln!("[liftover] failed to build liftover machine: {}", e); }
-                return None;
-            }
-        };
 
         // Helper to construct an interbase interval string in the format expected by chainfile/omics: "chr:+:start-end"
         let mut make_interval = |chrom: &str, start0: u64, end0: u64| -> Option<Interval> {
@@ -233,6 +217,20 @@ impl Liftover {
 
         if verbose { eprintln!("[liftover] no mapping for {}:{}", query_chrom, query_pos_1based); }
         None
+    }
+
+    /// Batch-map many 1-based positions on a chromosome; preserves input order.
+    pub fn map_many(&self, chrom: &str, positions_1based: &[u32]) -> Vec<Option<u32>> {
+        positions_1based.iter().map(|p| self.map_pos(chrom, *p)).collect()
+    }
+
+    /// Batch-map by chromosome: queries is a map chrom -> positions; returns mapped positions in the same order per chrom.
+    pub fn map_many_by_chrom(&self, queries: &HashMap<String, Vec<u32>>) -> HashMap<String, Vec<Option<u32>>> {
+        let mut out: HashMap<String, Vec<Option<u32>>> = HashMap::new();
+        for (chrom, v) in queries.iter() {
+            out.insert(chrom.clone(), self.map_many(chrom, v));
+        }
+        out
     }
 }
 

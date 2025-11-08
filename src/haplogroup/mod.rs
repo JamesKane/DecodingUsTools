@@ -100,11 +100,9 @@ pub fn analyze_haplogroup(
         let mut unmapped_count: u32 = 0;
         let mut sample_hits: Vec<(u32, Option<u32>)> = Vec::new();
 
-        for (pos_tree, entries) in tree_positions.iter() {
-            if tree_type == TreeType::MTDNA {
-                // For MT: allow small local uncertainty in coordinates between rCRS and UCSC chrM
-                // by probing a small window around the expected position. This is a pragmatic
-                // liftover that remains robust even if accessions differ.
+        if tree_type == TreeType::MTDNA {
+            // Original MT logic with relaxed window around base position
+            for (pos_tree, entries) in tree_positions.iter() {
                 let base = lifter.map_pos(src_chrom, *pos_tree).unwrap_or(*pos_tree);
                 let start = base.saturating_sub(5);
                 let end = base + 5;
@@ -117,18 +115,25 @@ pub fn analyze_haplogroup(
                     sample_hits.push((*pos_tree, Some(base)));
                 }
                 mapped_count += 1; // treat MT as mapped via relaxed window
-            } else {
-                let mapped = lifter.map_pos(src_chrom, *pos_tree);
+            }
+        } else {
+            // YDNA: batch liftover for performance
+            let mut positions: Vec<u32> = tree_positions.keys().copied().collect();
+            positions.sort_unstable();
+            let mapped_vec = lifter.map_many(src_chrom, &positions);
+            for (pos_tree, mapped) in positions.into_iter().zip(mapped_vec.into_iter()) {
                 if let Some(pos_bam) = mapped {
-                    positions_bam.entry(pos_bam).or_default().extend(entries.iter().copied());
-                    bam_to_tree_pos.entry(pos_bam).or_insert(*pos_tree);
-                    tree_to_bam_pos.entry(*pos_tree).or_insert(pos_bam);
+                    if let Some(entries) = tree_positions.get(&pos_tree) {
+                        positions_bam.entry(pos_bam).or_default().extend(entries.iter().copied());
+                    }
+                    bam_to_tree_pos.entry(pos_bam).or_insert(pos_tree);
+                    tree_to_bam_pos.entry(pos_tree).or_insert(pos_bam);
                     mapped_count += 1;
                 } else {
                     unmapped_count += 1;
                 }
                 if verbose_liftover && sample_hits.len() < 10 {
-                    sample_hits.push((*pos_tree, mapped));
+                    sample_hits.push((pos_tree, mapped));
                 }
             }
         }
