@@ -417,16 +417,31 @@ fn collect_scored_paths(scores: Vec<HaplogroupResult>, tree: &Haplogroup) -> Vec
         .values()
         .cloned()
         .filter(|result| {
-            let is_leaf = leaf_names.contains(&result.name);
-            // Keep only results that:
-            // 1. Are leaves
-            // 2. Either: (a) clean sparse signal (ancestral == 0 and derived >= 1), or (b) consistent signal (derived - 2*ancestral >= 1 and derived >= 2)
-            let consistency = (result.matching_snps as i64) - 2 * (result.ancestral_matches as i64);
-            let clean_sparse = result.ancestral_matches == 0 && result.matching_snps >= 1;
-            let consistent = consistency >= 1 && result.matching_snps >= 2;
-            is_leaf && (clean_sparse || consistent)
+            // Consider all leaves; do not pre-filter by clean/consistent to allow downstream evidence to drive selection
+            leaf_names.contains(&result.name)
         })
         .collect();
+
+    // Compute path-derived counts for each leaf to ensure we only consider leaves supported by any derived evidence along the path
+    let mut path_derived: HashMap<String, u32> = HashMap::new();
+    let mut path_ancestral: HashMap<String, u32> = HashMap::new();
+    for leaf in &remaining {
+        if let Some(path) = tree::find_path_to_root(tree, &leaf.name, &[]) {
+            let mut d: u32 = 0;
+            let mut a_m: u32 = 0;
+            for name in path.iter() {
+                if let Some(entry) = unique_results.get(name) {
+                    d = d.saturating_add(entry.matching_snps);
+                    a_m = a_m.saturating_add(entry.ancestral_matches);
+                }
+            }
+            path_derived.insert(leaf.name.clone(), d);
+            path_ancestral.insert(leaf.name.clone(), a_m);
+        }
+    }
+
+    // Keep only leaves that have at least one derived call along their ancestral path
+    remaining.retain(|leaf| path_derived.get(&leaf.name).copied().unwrap_or(0) >= 1);
 
     // Sort by consistency first (no-call tolerant), then by score, then by cumulative SNPs
     remaining.sort_by(|a, b| {
@@ -438,39 +453,168 @@ fn collect_scored_paths(scores: Vec<HaplogroupResult>, tree: &Haplogroup) -> Vec
             .then_with(|| b.cumulative_snps.cmp(&a.cumulative_snps))
     });
 
-    // Helper: comparator prioritizing no-call tolerance and consistency
+    // Helper: comparator prioritizing deeper, consistent leaves with fewer ancestral conflicts
     let cmp = |a: &HaplogroupResult, b: &HaplogroupResult| {
         let a_consistency = (a.matching_snps as i64) - 2 * (a.ancestral_matches as i64);
         let b_consistency = (b.matching_snps as i64) - 2 * (b.ancestral_matches as i64);
-        b.ancestral_matches
-            .cmp(&a.ancestral_matches) // fewer ancestral preferred
+        b.depth
+            .cmp(&a.depth) // prefer deeper (closer to terminal)
+            .then_with(|| b.ancestral_matches.cmp(&a.ancestral_matches)) // fewer ancestral preferred
             .then_with(|| b_consistency.cmp(&a_consistency))
             .then_with(|| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal))
             .then_with(|| b.cumulative_snps.cmp(&a.cumulative_snps))
     };
 
-    // From the root, choose the child subtree whose best leaf satisfies the comparator
-    let mut best_leaf_overall: Option<HaplogroupResult> = None;
-    for child in &tree.children {
-        // find best leaf under this child
-        let mut best_in_child: Option<HaplogroupResult> = None;
-        for leaf in &remaining {
-            if let Some(path) = tree::find_path_to_root(tree, &leaf.name, &[]) {
-                if path.contains(&child.name) {
-                    match &best_in_child {
-                        None => best_in_child = Some(leaf.clone()),
-                        Some(curr) => {
-                            if cmp(leaf, curr).is_lt() { best_in_child = Some(leaf.clone()); }
-                        }
+    // Rule-based descent to pick the best leaf closest to a terminal node per guidelines
+    fn pick_best_by_rules<'a>(
+        node: &'a Haplogroup,
+        map: &HashMap<String, HaplogroupResult>,
+        leaves: &Vec<HaplogroupResult>,
+        tree: &'a Haplogroup,
+        consec_conflicts: u32,
+    ) -> &'a Haplogroup {
+        let name = &node.name;
+        let entry = map.get(name);
+        // No entry -> stop here
+        if entry.is_none() { return node; }
+        let e = entry.unwrap();
+        let total = e.total_snps;
+        let mut derived = e.matching_snps;
+        let ancestral = e.ancestral_matches;
+        // When there is only one derived call in a block of more than five, treat the branch as ancestral
+        if total > 5 && derived == 1 { derived = 0; }
+        // Define conflict for succession tracking only for larger blocks (>4) with half-or-more ancestral
+        let block_conflict = total > 4 && (ancestral as u32) >= ((total + 1) / 2);
+        let consec = if block_conflict { consec_conflicts + 1 } else { 0 };
+        // If leaf, stop
+        if node.children.is_empty() { return node; }
+        // Terminate if three successive conflicting ancestor blocks
+        if consec >= 3 { return node; }
+        // Special case: only one phylo variant and it is ancestral -> inspect children rather than stopping
+        let single_ancestral = total == 1 && derived == 0 && ancestral == 1;
+        // Early termination: stop when parent and a direct child are strictly all-ancestral
+        let parent_all_ancestral = total > 0 && derived == 0 && ancestral == total;
+        if parent_all_ancestral {
+            for child in &node.children {
+                if let Some(ce) = map.get(&child.name) {
+                    let c_total = ce.total_snps;
+                    let c_derived = ce.matching_snps;
+                    let c_ancestral = ce.ancestral_matches;
+                    let child_all_ancestral = c_total > 0 && c_derived == 0 && c_ancestral == c_total;
+                    if child_all_ancestral {
+                        return node;
                     }
                 }
             }
         }
-        if let Some(candidate) = best_in_child {
-            match &best_leaf_overall {
-                None => best_leaf_overall = Some(candidate),
-                Some(curr) => {
-                    if cmp(&candidate, curr).is_lt() { best_leaf_overall = Some(candidate); }
+        // Compare leaves helper
+        let cmp_leaf = |a: &HaplogroupResult, b: &HaplogroupResult| {
+            let a_consistency = (a.matching_snps as i64) - 2 * (a.ancestral_matches as i64);
+            let b_consistency = (b.matching_snps as i64) - 2 * (b.ancestral_matches as i64);
+            b.depth
+                .cmp(&a.depth)
+                .then_with(|| b.ancestral_matches.cmp(&a.ancestral_matches))
+                .then_with(|| b_consistency.cmp(&a_consistency))
+                .then_with(|| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| b.cumulative_snps.cmp(&a.cumulative_snps))
+        };
+        // For each child, find best downstream leaf and whether any derived evidence exists along that subtree
+        let mut best_child: Option<&Haplogroup> = None;
+        let mut best_child_leaf: Option<HaplogroupResult> = None;
+        for child in &node.children {
+            let child_entry = map.get(&child.name);
+            let (cd, ca, _ct) = child_entry.map(|r| (r.matching_snps as i32, r.ancestral_matches as i32, r.total_snps as i32)).unwrap_or((0, 0, 0));
+            // New rule: allow descent when strictly more derived than ancestral at the child
+            let clear_derived_here = cd > ca;
+            // Determine candidate leaves limited to ONE extra level below this child (grandchildren that are leaves), or the child if it is a leaf
+            let mut best_leaf: Option<HaplogroupResult> = None;
+            let mut any_downstream_derived = false;
+            // Include the child itself if it is a leaf
+            if child.children.is_empty() {
+                if let Some(entry) = map.get(&child.name) {
+                    any_downstream_derived = any_downstream_derived || entry.matching_snps > 0;
+                    best_leaf = Some(entry.clone());
+                }
+            }
+            // Consider direct grandchildren that are leaves
+            for gc in &child.children {
+                if gc.children.is_empty() {
+                    if let Some(entry) = map.get(&gc.name) {
+                        if entry.matching_snps > 0 { any_downstream_derived = true; }
+                        match &best_leaf {
+                            None => best_leaf = Some(entry.clone()),
+                            Some(curr) => { if cmp_leaf(entry, curr).is_lt() { best_leaf = Some(entry.clone()); } }
+                        }
+                    }
+                }
+            }
+            // Parent gate: if parent is strictly all-ancestral, do not descend
+            let can_descend_parent_gate = !(parent_all_ancestral);
+            // Decide if we can descend into this child
+            let can_descend = can_descend_parent_gate && (clear_derived_here || (single_ancestral && any_downstream_derived));
+            if can_descend {
+                if let Some(bl) = best_leaf {
+                    match (&best_child_leaf, best_child) {
+                        (None, _) => { best_child_leaf = Some(bl); best_child = Some(child); },
+                        (Some(curr_leaf), Some(_)) => { if cmp_leaf(&bl, curr_leaf).is_lt() { best_child_leaf = Some(bl); best_child = Some(child); } },
+                        _ => {}
+                    }
+                }
+            }
+        }
+        // Only allow ONE extra level of descent from the current node
+        if let Some(ch) = best_child { return ch; }
+        // Otherwise, stop here per rules
+        node
+    }
+
+    let mut best_leaf_overall: Option<HaplogroupResult> = None;
+    // Build a leaf based on the rule-based picker
+    let chosen = pick_best_by_rules(tree, &unique_results, &remaining, tree, 0);
+    if chosen.children.is_empty() {
+        // Chosen is already a leaf
+        if let Some(entry) = unique_results.get(&chosen.name).cloned() {
+            best_leaf_overall = Some(entry);
+        }
+    } else {
+        // Choose the best descendant LEAF under the chosen subtree using the same comparator
+        let mut best_under_chosen: Option<HaplogroupResult> = None;
+        for leaf in &remaining {
+            if let Some(path) = tree::find_path_to_root(tree, &leaf.name, &[]) {
+                if path.contains(&chosen.name) {
+                    match &best_under_chosen {
+                        None => best_under_chosen = Some(leaf.clone()),
+                        Some(curr) => { if cmp(leaf, curr).is_lt() { best_under_chosen = Some(leaf.clone()); } }
+                    }
+                }
+            }
+        }
+        if let Some(best) = best_under_chosen {
+            best_leaf_overall = Some(best);
+        } else {
+            // Fallback: From the root, choose the child subtree whose best leaf satisfies the comparator
+            for child in &tree.children {
+                // find best leaf under this child
+                let mut best_in_child: Option<HaplogroupResult> = None;
+                for leaf in &remaining {
+                    if let Some(path) = tree::find_path_to_root(tree, &leaf.name, &[]) {
+                        if path.contains(&child.name) {
+                            match &best_in_child {
+                                None => best_in_child = Some(leaf.clone()),
+                                Some(curr) => {
+                                    if cmp(leaf, curr).is_lt() { best_in_child = Some(leaf.clone()); }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(candidate) = best_in_child {
+                    match &best_leaf_overall {
+                        None => best_leaf_overall = Some(candidate),
+                        Some(curr) => {
+                            if cmp(&candidate, curr).is_lt() { best_leaf_overall = Some(candidate); }
+                        }
+                    }
                 }
             }
         }
@@ -484,38 +628,65 @@ fn collect_scored_paths(scores: Vec<HaplogroupResult>, tree: &Haplogroup) -> Vec
             for c in &node.children { if let Some(found) = find_by_pred(c, pred) { return Some(found); } }
             None
         }
-        // IJK split
-        if let Some(ijk) = find_by_pred(tree, &|n: &str| n.starts_with("IJK-") || n.contains("IJK")) {
-            eprintln!("[debug] IJK split at {}: {} children", ijk.name, ijk.children.len());
-            for ch in &ijk.children {
+        // Helper: pretty print tallies and decisions
+        let mut print_children = |label: &str, parent: &Haplogroup| {
+            eprintln!("[debug] {} split at {}: {} children", label, parent.name, parent.children.len());
+            // Determine which child would be chosen by rules from this parent
+            let chosen = pick_best_by_rules(parent, &unique_results, &remaining, tree, 0);
+            for ch in &parent.children {
                 if let Some(entry) = unique_results.get(&ch.name) {
-                    let consistency = (entry.matching_snps as i64) - 2 * (entry.ancestral_matches as i64);
-                    eprintln!("[debug] IJK child {}\t{:.4}\t{}\t{}\tconsistency={}", entry.name, entry.score, entry.matching_snps, entry.ancestral_matches, consistency);
+                    let total = entry.total_snps;
+                    let mut derived = entry.matching_snps;
+                    let ancestral = entry.ancestral_matches;
+                    let no_calls = entry.no_calls;
+                    let norm_single = total > 5 && derived == 1;
+                    if norm_single { derived = 0; }
+                    let conflict = total > 4 && (ancestral as u32) >= ((total + 1) / 2);
+                    let clear_here = ((entry.matching_snps >= 1 && entry.ancestral_matches == 0)
+                        || (entry.matching_snps >= 2 && entry.matching_snps > entry.ancestral_matches));
+                    let mark = if ch.name == chosen.name { " <chosen>" } else { "" };
+                    eprintln!(
+                        "[debug]   child {}{}\tbranch_score={:.4}\t(der={}, anc={}, noc={}, total={})\tnormalized_single={}\tconflict={}\tclear_here={}",
+                        entry.name,
+                        mark,
+                        entry.score,
+                        derived,
+                        ancestral,
+                        no_calls,
+                        total,
+                        norm_single,
+                        conflict,
+                        clear_here
+                    );
                 } else {
-                    eprintln!("[debug] IJK child {} has no score entry", ch.name);
+                    eprintln!("[debug]   child {} has no score entry", ch.name);
                 }
             }
+            eprintln!("[debug] {} decision -> {}", label, chosen.name);
+        };
+        // IJK split
+        if let Some(ijk) = find_by_pred(tree, &|n: &str| n.starts_with("IJK-") || n.contains("IJK")) {
+            print_children("IJK", ijk);
         }
         // K split
         if let Some(k_node) = find_by_pred(tree, &|n: &str| n.starts_with("K-") || n == "K" || n.contains("K-M9")) {
-            eprintln!("[debug] K split at {}: {} children", k_node.name, k_node.children.len());
-            for ch in &k_node.children {
-                if let Some(entry) = unique_results.get(&ch.name) {
-                    let consistency = (entry.matching_snps as i64) - 2 * (entry.ancestral_matches as i64);
-                    eprintln!("[debug] K child {}\t{:.4}\t{}\t{}\tconsistency={}", entry.name, entry.score, entry.matching_snps, entry.ancestral_matches, consistency);
-                } else {
-                    eprintln!("[debug] K child {} has no score entry", ch.name);
-                }
-            }
+            print_children("K", k_node);
         }
     }
 
-    // Take the top LEAF from the best root child path and ensure its ancestral path is included first
+    // Take the top LEAF from the best root child path and output the LEAF first, then its ancestral path
     if let Some(top_result) = best_leaf_overall.or_else(|| remaining.first().cloned()) {
+        // Output the top leaf first
+        if let Some(entry) = unique_results.get(&top_result.name).cloned() {
+            if std::env::var("DECODINGUS_DEBUG_SCORES").ok().as_deref() == Some("1") {
+                eprintln!("[debug] PATH {}\tbranch={:.4}\tcum={:.4}", entry.name, entry.score, entry.score);
+            }
+            ordered_results.push(entry);
+        }
+        // Then include its ancestral path (excluding the leaf itself), from root down to parent
         if let Some(path) = tree::find_path_to_root(tree, &top_result.name, &[]) {
-            // Insert path elements (root -> leaf) first
             let mut cumulative = 0.0;
-            for name in path.clone().into_iter().rev() {
+            for name in path.into_iter().rev().filter(|n| n != &top_result.name) {
                 if let Some(entry) = unique_results.get(&name).cloned() {
                     cumulative += entry.score;
                     if std::env::var("DECODINGUS_DEBUG_SCORES").ok().as_deref() == Some("1") {
