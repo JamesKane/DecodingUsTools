@@ -9,7 +9,7 @@ use std::io::Read;
 use std::path::PathBuf;
 
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TreeType {
     YDNA,
     MTDNA,

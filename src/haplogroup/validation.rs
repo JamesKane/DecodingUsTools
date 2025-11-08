@@ -15,9 +15,9 @@ pub fn validate_reference<R: Read>(
     // Define possible chromosome names based on build and type
     let possible_names = match (tree_type, genome.name()) {
         (TreeType::YDNA, "GRCh38") => vec!["chrY", "Y", "NC_000024.10", "CM000686.2"],
-        (TreeType::YDNA, "GRCh37") => vec!["Y", "chrY"],
+        (TreeType::YDNA, "GRCh37") => vec!["Y", "chrY"], // hg19 == GRCh37; allow both
         (TreeType::YDNA, "T2T-CHM13v2.0") => vec!["Y", "chrY", "CP086569.2", "NC_060948.1"],
-        (TreeType::MTDNA, _) => vec!["chrM", "MT", "M"],
+        (TreeType::MTDNA, _) => vec!["chrM", "MT", "M", "NC_001807"],
         _ => vec![]
     };
 

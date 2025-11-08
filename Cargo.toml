@@ -33,6 +33,9 @@ niffler = "2.3"
 protobuf = "3.4"
 thiserror = "1.0.69"
 tokio = "1.45.0"
+chainfile = "0.3"
+flate2 = "1.0"
+omics = "0.2.0"
 
 [features]
 default = ["cli"]

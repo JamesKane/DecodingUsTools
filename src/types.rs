@@ -105,6 +105,9 @@ impl ReferenceGenome {
             return Some(ReferenceGenome::GRCh38);
         } else if header_text.contains("AS:GRCh37") || header_text.contains("GCA_000001405.1") {
             return Some(ReferenceGenome::GRCh37);
+        } else if header_text.contains("AS:HG19") || header_text.contains("AS:hg19") {
+            // Treat UCSC hg19 as GRCh37
+            return Some(ReferenceGenome::GRCh37);
         }
 
         // Check for CHM13v2 using multiple strategies
@@ -131,7 +134,7 @@ impl ReferenceGenome {
         }
 
         // Fallback: Check for characteristic GRCh37 chr1 length (249250621 bp)
-        if header_text.contains("SN:1") && header_text.contains("LN:249250621") {
+        if (header_text.contains("SN:1") || header_text.contains("SN:chr1")) && header_text.contains("LN:249250621") {
             return Some(ReferenceGenome::GRCh37);
         }
 

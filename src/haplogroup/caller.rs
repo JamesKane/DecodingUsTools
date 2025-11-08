@@ -1,16 +1,81 @@
 use crate::haplogroup::types::Locus;
 use indicatif::ProgressBar;
 use rust_htslib::bam::{self, Read};
-use rust_htslib::faidx;
 use std::collections::HashMap;
 use std::error::Error;
+use std::collections::HashSet;
 
-pub fn collect_snp_calls(
+pub type BaseCounts = HashMap<char, u32>;
+
+/// Tally base counts at the specified 1-based positions on a given chromosome/contig.
+/// - Positions are provided as an iterator of u32 (1-based genomic positions)
+/// - Returns a map of position -> base counts (A/C/G/T/N after reverse-complement correction)
+pub fn tally_bases_at_positions<R: Read, I: IntoIterator<Item = u32>>(
+    bam: &mut R,
+    header: &bam::HeaderView,
+    chromosome: &str,
+    positions: I,
+    min_mapq: u8,
+) -> Result<HashMap<u32, BaseCounts>, Box<dyn Error>> {
+    let target_tid = header
+        .tid(chromosome.as_bytes())
+        .ok_or_else(|| format!("Chromosome {} not found in BAM header", chromosome))? as i32;
+
+    let mut wanted: HashSet<u32> = positions.into_iter().collect();
+    if wanted.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut coverage: HashMap<u32, BaseCounts> = HashMap::new();
+
+    for r in bam.records() {
+        let record = r?;
+        if record.tid() != target_tid { continue; }
+        if record.mapq() < min_mapq { continue; }
+        let start_pos = record.pos() as u32; // 0-based
+        let read_len = record.seq_len() as usize;
+        let cigar = record.cigar();
+        let mut ref_pos = start_pos; // 0-based
+        let mut read_pos: usize = 0;
+
+        for op in cigar.iter() {
+            match op.char() {
+                'M' | '=' | 'X' => {
+                    let len = op.len() as usize;
+                    for i in 0..len {
+                        let vcf_pos = ref_pos + 1; // 1-based
+                        if wanted.contains(&vcf_pos) {
+                            let rp = read_pos + i;
+                            if rp < read_len {
+                                // Per-base quality filter and N masking
+                                let base_qual = record.qual()[rp] as u8;
+                                if base_qual < min_mapq { continue; }
+                                let enc = record.seq().encoded_base(rp);
+                                if enc == 15 { continue; } // skip 'N'
+                                let base = match enc { 1 => 'A', 2 => 'C', 4 => 'G', 8 => 'T', 15 => 'N', _ => 'N' };
+                                // Do NOT reverse-complement: base calls are in reference orientation per CIGAR/alignment
+                                *coverage.entry(vcf_pos).or_default().entry(base).or_insert(0) += 1;
+                            }
+                        }
+                        ref_pos += 1;
+                    }
+                    read_pos += len;
+                }
+                'D' | 'N' => { ref_pos += op.len(); }
+                'I' | 'S' => { read_pos += op.len() as usize; }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(coverage)
+}
+
+pub fn collect_snp_calls<R: Read>(
     min_depth: u32,
     min_quality: u8,
-    fasta_reader: &mut faidx::Reader,
-    mut bam: bam::IndexedReader,
-    build_id: String,
+    bam: &mut R,
+    header: &bam::HeaderView,
+    _build_id: String,
     chromosome: String,
     positions: &mut HashMap<u32, Vec<(&str, &Locus)>>,
     snp_calls: &mut HashMap<u32, (char, u32, f64)>,
@@ -21,33 +86,15 @@ pub fn collect_snp_calls(
             .template("{spinner:.green} Processing position {pos}")
             .unwrap(),
     );
-    let header = bam.header().clone();
 
-    // Get chromosome ID and length
-    let tid = header.tid(chromosome.as_bytes())
-        .ok_or_else(|| format!("Chromosome {} not found in BAM header", chromosome))?;
-    let chr_len = header.target_len(tid)
-        .ok_or_else(|| format!("No length information for chromosome {}", chromosome))?;
-
-    // Create fetch definition for the entire chromosome
-    let fetch_def = format!("{}:1-{}", chromosome, chr_len);
-    println!("Attempting to fetch region: {}", fetch_def);
-
-    match bam.fetch(&fetch_def) {
-        Ok(_) => (),
-        Err(e) => return Err(format!(
-            "Failed to fetch chromosome region '{}'. Error: {}. \
-            Make sure the chromosome name matches exactly and the BAM file is indexed.",
-            fetch_def, e
-        ).into())
-    }
+    let target_tid = header
+        .tid(chromosome.as_bytes())
+        .ok_or_else(|| format!("Chromosome {} not found in BAM header", chromosome))? as i32;
 
     process_region(
-        &mut bam,
-        &header,
-        fasta_reader,
+        bam,
+        target_tid,
         positions,
-        &build_id,
         min_depth,
         min_quality,
         snp_calls,
@@ -61,68 +108,52 @@ pub fn collect_snp_calls(
 
 fn process_region<R: Read>(
     bam: &mut R,
-    header: &bam::HeaderView,
-    fasta: &mut faidx::Reader,
+    target_tid: i32,
     positions: &HashMap<u32, Vec<(&str, &Locus)>>,
-    build_id: &str,
     min_depth: u32,
     min_quality: u8,
     snp_calls: &mut HashMap<u32, (char, u32, f64)>,
     progress: &ProgressBar,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut coverage: HashMap<u32, Vec<u8>> = HashMap::new();
+    let mut coverage: HashMap<u32, Vec<char>> = HashMap::new();
 
     for r in bam.records() {
         let record = r?;
+        if record.tid() != target_tid { continue; }
         let start_pos = record.pos() as u32;
         progress.set_position(start_pos as u64);
 
         if record.mapq() >= min_quality {
-            let sequence = record.seq().as_bytes();
+            let read_len = record.seq_len() as usize;
             let cigar = record.cigar();
-            let mut ref_pos = start_pos;
-            let mut read_pos = 0;
-
-            let tid = record.tid();
-            let ref_name = String::from_utf8_lossy(header.tid2name(tid as u32));
+            let mut ref_pos = start_pos; // 0-based
+            let mut read_pos: usize = 0;
 
             for op in cigar.iter() {
                 match op.char() {
                     'M' | '=' | 'X' => {
                         let len = op.len() as usize;
                         for i in 0..len {
-                            let vcf_pos = ref_pos + 1;
-                            // Check if this position has any loci and if they match the current chromosome
-                            if let Some(loci) = positions.get(&vcf_pos) {
-                                let relevant_loci = loci.iter().any(|(_, locus)| {
-                                    if let Some(coord) = locus.coordinates.get(build_id) {
-                                        coord.chromosome == ref_name
-                                    } else {
-                                        false
-                                    }
-                                });
-
-                                if relevant_loci && read_pos + i < sequence.len() {
-                                    let base_index = read_pos + i;
-                                    let base = sequence[base_index].to_ascii_uppercase();
-
-                                    // Use fetch_seq instead of fetch + read
-                                    let ref_seq = fasta.fetch_seq(&ref_name, ref_pos as usize, ref_pos as usize)?;
-                                    if !ref_seq.is_empty() {
-                                        coverage.entry(vcf_pos).or_default().push(base);
-                                    }
+                            let vcf_pos = ref_pos + 1; // 1-based
+                            if let Some(_loci) = positions.get(&vcf_pos) {
+                                let rp = read_pos + i;
+                                if rp < read_len {
+                                    // Filter by per-base quality and skip 'N'
+                                    let base_qual = record.qual()[rp] as u8;
+                                    if base_qual < min_quality { continue; }
+                                    let enc = record.seq().encoded_base(rp);
+                                    if enc == 15 { continue; }
+                                    let base = match enc { 1 => 'A', 2 => 'C', 4 => 'G', 8 => 'T', 15 => 'N', _ => 'N' };
+                                    // Do NOT reverse-complement per-read bases; alignment already orients them
+                                    coverage.entry(vcf_pos).or_default().push(base);
                                 }
                             }
                             ref_pos += 1;
                         }
                         read_pos += len;
                     }
-                    'D' | 'N' => {
-                        ref_pos += op.len();
-                    }
-                    'I' | 'S' => {
-                        read_pos += op.len() as usize;
-                    }
+                    'D' | 'N' => { ref_pos += op.len(); }
+                    'I' | 'S' => { read_pos += op.len() as usize; }
                     _ => {}
                 }
             }
@@ -133,8 +164,8 @@ fn process_region<R: Read>(
         if bases.len() >= min_depth as usize {
             let mut base_counts: HashMap<char, u32> = HashMap::new();
 
-            for &base in &bases {
-                *base_counts.entry(base as char).or_insert(0) += 1;
+            for base in &bases {
+                *base_counts.entry(*base).or_insert(0) += 1;
             }
 
             if let Some((&base, &count)) = base_counts.iter().max_by_key(|&(_, count)| count) {
