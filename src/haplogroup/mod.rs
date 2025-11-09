@@ -71,7 +71,7 @@ pub fn analyze_haplogroup(
     let projected_tree = tree::project_tree_to_build(&haplogroup_tree, src_build_id, bam_build.clone(), &lifter);
 
     // Debug: verify projection worked for key haplogroups
-    let debug_projection = std::env::var("DECODINGUS_DEBUG_SCORES").ok().as_deref() == Some("1");
+    let debug_projection = std::env::var("DECODINGUS_DEBUG_PROJECTION").ok().as_deref() == Some("1");
     if debug_projection {
         eprintln!("[debug] Tree projection: {} -> {}", src_build_id, bam_build.name());
 

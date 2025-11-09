@@ -61,7 +61,7 @@ pub(crate) fn collect_snps<'a>(
     positions: &mut HashMap<u32, Vec<(&'a str, &'a Locus)>>,
     build_id: &str,
 ) {
-    let debug = std::env::var("DECODINGUS_DEBUG_SCORES").ok().as_deref() == Some("1")
+    let debug = std::env::var("DECODINGUS_DEBUG_TREE").ok().as_deref() == Some("1")
         && (tree.name.contains("P312") || tree.name.contains("L21") || tree.name.contains("M269"));
 
     // Debug specific locus name across all haplogroups
@@ -128,7 +128,7 @@ pub(crate) fn project_tree_to_build(
     dst_genome: ReferenceGenome,
     lifter: &Liftover,
 ) -> Haplogroup {
-    let debug = std::env::var("DECODINGUS_DEBUG_SCORES").ok().as_deref() == Some("1");
+    let debug = std::env::var("DECODINGUS_DEBUG_TREE").ok().as_deref() == Some("1");
 
     fn project_locus(
         locus: &Locus,
