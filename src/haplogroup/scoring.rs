@@ -30,40 +30,88 @@ fn compute_branch_metrics(
         .collect();
 
     let mut bm = BranchMetrics::default();
+    
+    // Enable debug for P312 specifically
+    let debug = std::env::var("DECODINGUS_DEBUG_SCORES").ok().as_deref() == Some("1") 
+        && haplogroup.name.contains("P312");
 
     for locus in &defining_loci {
         if let Some(coord) = locus.coordinates.get(build_id) {
+            if debug {
+                // Always print position being checked for P312
+                eprintln!(
+                    "[scoring.debug] {} locus={} checking position={} (chrom={})",
+                    haplogroup.name, locus.name, coord.position, coord.chromosome
+                );
+            }
+            
             if let Some((called_base, depth_call, freq)) = snp_calls.get(&coord.position) {
+                if debug {
+                    eprintln!(
+                        "[scoring.debug] {} locus={} pos={} called_base='{}' depth={} freq={:.3}",
+                        haplogroup.name, locus.name, coord.position, called_base, depth_call, freq
+                    );
+                    eprintln!(
+                        "[scoring.debug]   coord.derived='{}' coord.ancestral='{}'",
+                        coord.derived, coord.ancestral
+                    );
+                }
+                
                 if *depth_call >= MIN_DEPTH {
                     let maybe_derived = coord.derived.chars().next();
                     let maybe_ancestral = coord.ancestral.chars().next();
+                    
+                    if debug {
+                        eprintln!(
+                            "[scoring.debug]   derived_char={:?} ancestral_char={:?}",
+                            maybe_derived, maybe_ancestral
+                        );
+                    }
+                    
                     if let (Some(derived_base), Some(ancestral_base)) = (maybe_derived, maybe_ancestral) {
                         if *called_base == derived_base {
                             if *freq >= HIGH_QUALITY_THRESHOLD && *depth_call >= 1 {
                                 bm.derived += 1;
+                                if debug { eprintln!("[scoring.debug]   -> counted as DERIVED (high qual)"); }
                             } else if *freq >= MEDIUM_QUALITY_THRESHOLD && *depth_call >= 1 {
                                 bm.derived += 1;
+                                if debug { eprintln!("[scoring.debug]   -> counted as DERIVED (medium qual)"); }
                             } else {
                                 bm.low_quality += 1;
+                                if debug { eprintln!("[scoring.debug]   -> counted as LOW_QUALITY"); }
                             }
                         } else if *called_base == ancestral_base {
                             if *freq >= HIGH_QUALITY_THRESHOLD && *depth_call >= 1 {
                                 bm.ancestral += 1;
+                                if debug { eprintln!("[scoring.debug]   -> counted as ANCESTRAL"); }
                             } else {
                                 bm.low_quality += 1;
+                                if debug { eprintln!("[scoring.debug]   -> counted as LOW_QUALITY (anc, low qual)"); }
                             }
                         } else {
                             // true conflict: called base is neither ancestral nor derived
                             bm.conflicts += 1;
+                            if debug {
+                                eprintln!(
+                                    "[scoring.debug]   -> CONFLICT: called '{}' != derived '{}' != ancestral '{}'",
+                                    called_base, derived_base, ancestral_base
+                                );
+                            }
                         }
                     } else {
                         bm.no_calls += 1;
+                        if debug { eprintln!("[scoring.debug]   -> NO_CALL (missing derived/ancestral in coord)"); }
                     }
                 } else {
                     bm.no_calls += 1;
+                    if debug { eprintln!("[scoring.debug]   -> NO_CALL (depth < MIN_DEPTH)"); }
                 }
             } else {
                 bm.no_calls += 1;
+                if debug { 
+                    eprintln!("[scoring.debug] {} locus={} pos={} -> NO_CALL (no snp_call at this position)", 
+                              haplogroup.name, locus.name, coord.position); 
+                }
             }
         }
     }

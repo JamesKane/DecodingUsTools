@@ -57,22 +57,42 @@ pub(crate) fn load_tree(tree_type: TreeType, provider: crate::cli::TreeProvider)
 }
 
 pub(crate) fn collect_snps<'a>(
-    haplogroup: &'a Haplogroup,
+    tree: &'a Haplogroup,
     positions: &mut HashMap<u32, Vec<(&'a str, &'a Locus)>>,
     build_id: &str,
 ) {
-    for locus in &haplogroup.loci {
-        if let Some(coord) = locus.coordinates.get(build_id) {
-            if matches!(locus.loci_type, LociType::SNP) {
+    let debug = std::env::var("DECODINGUS_DEBUG_SCORES").ok().as_deref() == Some("1")
+        && (tree.name.contains("P312") || tree.name.contains("L21") || tree.name.contains("M269"));
+
+    // Debug specific locus name across all haplogroups
+    let debug_locus_name = std::env::var("DECODINGUS_DEBUG_SITE").ok();
+
+    for locus in &tree.loci {
+        if matches!(locus.loci_type, LociType::SNP) {
+            if let Some(coord) = locus.coordinates.get(build_id) {
+                // Check if this locus matches the debug filter
+                let is_debug_locus = debug_locus_name.as_ref()
+                    .map(|name| locus.name.contains(name))
+                    .unwrap_or(false);
+
+                if debug || is_debug_locus {
+                    eprintln!("[tree.collect] haplogroup='{}' locus='{}' at pos={} (build={}) anc='{}' der='{}'",
+                              tree.name, locus.name, coord.position, build_id,
+                              coord.ancestral, coord.derived);
+                }
+
                 positions
                     .entry(coord.position)
-                    .or_default()
-                    .push((&haplogroup.name, locus));
+                    .or_insert_with(Vec::new)
+                    .push((&tree.name, locus));
+            } else if debug {
+                eprintln!("[tree.collect] {} locus {} MISSING coordinate for build {}",
+                          tree.name, locus.name, build_id);
             }
         }
     }
 
-    for child in &haplogroup.children {
+    for child in &tree.children {
         collect_snps(child, positions, build_id);
     }
 }
@@ -108,11 +128,15 @@ pub(crate) fn project_tree_to_build(
     dst_genome: ReferenceGenome,
     lifter: &Liftover,
 ) -> Haplogroup {
+    let debug = std::env::var("DECODINGUS_DEBUG_SCORES").ok().as_deref() == Some("1");
+
     fn project_locus(
         locus: &Locus,
         src_build: &str,
         dst_build_id: &str,
         lifter: &Liftover,
+        debug: bool,
+        parent_name: &str,
     ) -> Locus {
         let mut new_locus = locus.clone();
         if let Some(coord) = locus.coordinates.get(src_build) {
@@ -124,6 +148,16 @@ pub(crate) fn project_tree_to_build(
                 &coord.ancestral,
                 &coord.derived,
             ) {
+                if debug && (parent_name.contains("P312") || parent_name.contains("L21")) {
+                    eprintln!("[tree.debug] {} locus {}: {} {}:{} ({}->{}) -> {} {}:{} ({}->{}){}",
+                              parent_name, locus.name,
+                              src_build, coord.chromosome, coord.position,
+                              coord.ancestral, coord.derived,
+                              dst_build_id, mapped.contig, mapped.position,
+                              mapped.ancestral, mapped.derived,
+                              if mapped.was_reverse { " [RC]" } else { "" });
+                }
+
                 let projected = LociCoordinate {
                     position: mapped.position,
                     chromosome: mapped.contig,
@@ -133,6 +167,9 @@ pub(crate) fn project_tree_to_build(
                 let mut coords = new_locus.coordinates.clone();
                 coords.insert(dst_build_id.to_string(), projected);
                 new_locus.coordinates = coords;
+            } else if debug && (parent_name.contains("P312") || parent_name.contains("L21")) {
+                eprintln!("[tree.debug] {} locus {}: FAILED to liftover from {} {}:{}",
+                          parent_name, locus.name, src_build, coord.chromosome, coord.position);
             }
         }
         new_locus
@@ -146,7 +183,7 @@ pub(crate) fn project_tree_to_build(
         loci: tree
             .loci
             .iter()
-            .map(|l| project_locus(l, src_build, dst_build_id, lifter))
+            .map(|l| project_locus(l, src_build, dst_build_id, lifter, debug, &tree.name))
             .collect(),
         children: Vec::new(),
     };

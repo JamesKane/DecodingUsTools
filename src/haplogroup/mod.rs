@@ -70,10 +70,53 @@ pub fn analyze_haplogroup(
     // Project the tree to the BAM's build; this normalizes positions and alleles (strand-aware)
     let projected_tree = tree::project_tree_to_build(&haplogroup_tree, src_build_id, bam_build.clone(), &lifter);
 
+    // Debug: verify projection worked for key haplogroups
+    let debug_projection = std::env::var("DECODINGUS_DEBUG_SCORES").ok().as_deref() == Some("1");
+    if debug_projection {
+        eprintln!("[debug] Tree projection: {} -> {}", src_build_id, bam_build.name());
+
+        // Check a few key haplogroups to verify their coordinates changed
+        let check_names = vec!["R-P312", "R-L21", "R-M269"];
+        for check_name in check_names {
+            if let Some(original_hg) = find_haplogroup(&haplogroup_tree, check_name) {
+                if let Some(projected_hg) = find_haplogroup(&projected_tree, check_name) {
+                    eprintln!("[debug] Haplogroup {} projection check:", check_name);
+                    for locus in &original_hg.loci {
+                        if let Some(orig_coord) = locus.coordinates.get(src_build_id) {
+                            eprintln!("[debug]   Original ({}): {} pos={} anc={} der={}",
+                                      src_build_id, locus.name, orig_coord.position,
+                                      orig_coord.ancestral, orig_coord.derived);
+                        }
+                    }
+                    for locus in &projected_hg.loci {
+                        if let Some(proj_coord) = locus.coordinates.get(bam_build.name()) {
+                            eprintln!("[debug]   Projected ({}): {} pos={} anc={} der={}",
+                                      bam_build.name(), locus.name, proj_coord.position,
+                                      proj_coord.ancestral, proj_coord.derived);
+                        } else {
+                            eprintln!("[debug]   Projected ({}): {} MISSING (liftover failed)",
+                                      bam_build.name(), locus.name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Collect positions directly from the projected tree in BAM build coordinates
     let build_id = bam_build.name();
     let mut positions_bam: HashMap<u32, Vec<(&str, &Locus)>> = HashMap::new();
     tree::collect_snps(&projected_tree, &mut positions_bam, build_id);
+
+    if debug_projection {
+        eprintln!("[debug] Collected {} unique positions from projected tree for build '{}'",
+                  positions_bam.len(), build_id);
+        // Show a sample of collected positions
+        let mut sample_positions: Vec<u32> = positions_bam.keys().copied().collect();
+        sample_positions.sort();
+        eprintln!("[debug] Sample positions collected: {:?}",
+                  sample_positions.iter().take(10).collect::<Vec<_>>());
+    }
 
     // Optional: focus debug on a specific site by locus name (e.g., M526)
     let debug_site = std::env::var("DECODINGUS_DEBUG_SITE").ok();
@@ -105,6 +148,27 @@ pub fn analyze_haplogroup(
 
     // No remapping needed; scoring consumes BAM-build coordinates against the projected tree
     let snp_calls = snp_calls_bam;
+
+    // Debug: dump snp_calls for P312 position if debugging
+    if debug_projection || debug_site.is_some() {
+        let p312_pos = 20_901_962u32;
+        if let Some((base, depth, freq)) = snp_calls.get(&p312_pos) {
+            eprintln!("[debug] snp_calls at P312 position {}: base='{}' depth={} freq={:.3}",
+                      p312_pos, base, depth, freq);
+        } else {
+            eprintln!("[debug] snp_calls at P312 position {}: NO CALL FOUND", p312_pos);
+        }
+
+        // Also check if positions_bam has P312
+        if let Some(entries) = positions_bam.get(&p312_pos) {
+            eprintln!("[debug] positions_bam at P312 position {} has {} entries:", p312_pos, entries.len());
+            for (hg_name, locus) in entries {
+                eprintln!("[debug]   - haplogroup='{}' locus='{}'", hg_name, locus.name);
+            }
+        } else {
+            eprintln!("[debug] positions_bam at P312 position {}: NOT TRACKED", p312_pos);
+        }
+    }
 
     progress.set_message("Scoring haplogroups...");
 
