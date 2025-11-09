@@ -11,6 +11,7 @@ pub fn run(
     min_quality: u8,
     provider: TreeProvider,
     show_snps: bool,
+    include_off_path: bool,
     tree_type: TreeType,
 ) -> Result<(), Box<dyn Error>> {
     haplogroup::analyze_haplogroup(
@@ -22,5 +23,6 @@ pub fn run(
         tree_type,
         provider,
         show_snps,
+        include_off_path,
     )
 }

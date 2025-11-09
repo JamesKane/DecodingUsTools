@@ -24,6 +24,7 @@ pub fn analyze_haplogroup(
     tree_type: TreeType,
     provider: crate::cli::TreeProvider,
     show_snps: bool,
+    include_off_path: bool,
 ) -> Result<(), Box<dyn Error>> {
     let progress = ProgressBar::new_spinner();
     progress.set_style(
@@ -183,10 +184,7 @@ pub fn analyze_haplogroup(
         build_id,
     );
 
-    let mut ordered_scores = collect_scored_paths(scores, &projected_tree);
-    // Post-process: filter zero-score artifacts and sort by depth descending (leaf to root)
-    ordered_scores.retain(|r| r.score > 0.0);
-    ordered_scores.sort_by(|a, b| b.depth.cmp(&a.depth).then_with(|| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)));
+    let mut ordered_scores = collect_scored_paths(scores, &projected_tree, include_off_path);
 
     // Optional debug dump of top haplogroups (env-gated)
     if std::env::var("DECODINGUS_DEBUG_SCORES").ok().as_deref() == Some("1") {
@@ -339,7 +337,7 @@ fn find_haplogroup<'a>(tree: &'a Haplogroup, name: &str) -> Option<&'a Haplogrou
     None
 }
 
-fn collect_scored_paths(scores: Vec<HaplogroupResult>, tree: &Haplogroup) -> Vec<HaplogroupResult> {
+fn collect_scored_paths(scores: Vec<HaplogroupResult>, tree: &Haplogroup, include_off_path: bool) -> Vec<HaplogroupResult> {
     let mut ordered_results = Vec::new();
 
     // Helper: collect leaf names
@@ -662,16 +660,27 @@ fn collect_scored_paths(scores: Vec<HaplogroupResult>, tree: &Haplogroup) -> Vec
         }
     }
 
-    // Sort remaining LEAVES by score descending first, cumulative SNPs as tiebreaker
-    remaining.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| b.cumulative_snps.cmp(&a.cumulative_snps))
-    });
-
-    // Add remaining results
-    ordered_results.extend(remaining);
+    // Optionally include off-path leaves for diagnostics with evidence gating
+    if include_off_path {
+        let eps = 1e-9f64;
+        // Evidence gate: (matches >= 2) || (matches >= 1 && ancestral == 0), and score > EPS
+        let mut gated: Vec<HaplogroupResult> = remaining
+            .into_iter()
+            .filter(|r| {
+                let matches = r.matching_snps as i32;
+                let ancestral = r.ancestral_matches as i32;
+                (matches >= 2 || (matches >= 1 && ancestral == 0)) && r.score > eps
+            })
+            .collect();
+        // Order by score desc, then cumulative SNPs desc
+        gated.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| b.cumulative_snps.cmp(&a.cumulative_snps))
+        });
+        ordered_results.extend(gated);
+    }
 
     ordered_results
 }

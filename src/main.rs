@@ -76,6 +76,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             min_quality,
             provider,
             show_snps,
+            include_off_path,
         } => {
             commands::find_branch::run(
                 bam_file,
@@ -85,6 +86,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 min_quality,
                 provider,
                 show_snps,
+                include_off_path,
                 TreeType::YDNA
             )?;
         }
@@ -96,6 +98,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             min_quality,
             provider,
             show_snps,
+            include_off_path,
         } => {
             commands::find_branch::run(
                 bam_file,
@@ -105,6 +108,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 min_quality,
                 provider,
                 show_snps,
+                include_off_path,
                 TreeType::MTDNA
             )?;
         }

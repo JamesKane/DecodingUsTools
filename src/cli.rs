@@ -81,6 +81,9 @@ pub enum Commands {
         /// Show detailed SNP matches for each branch
         #[arg(long)]
         show_snps: bool,
+        /// Include off-path candidate leaves with sufficient evidence in results (diagnostics)
+        #[arg(long = "include-off-path")]
+        include_off_path: bool,
     },
 
     /// Find the closest MT-DNA branch for a sample
@@ -104,6 +107,9 @@ pub enum Commands {
         /// Show detailed SNP matches for each branch
         #[arg(long)]
         show_snps: bool,
+        /// Include off-path candidate leaves with sufficient evidence in results (diagnostics)
+        #[arg(long = "include-off-path")]
+        include_off_path: bool,
     },
 
     /// Fix a BAM file that was surjected from vg surject

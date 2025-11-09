@@ -27,6 +27,7 @@ fn chm13_chrY_ftdna_produces_r_fgc29071() {
         tree_type,
         provider,
         false, // show_snps
+        false, // Adding the missing boolean parameter
     ).expect("haplogroup analysis finished");
 
     let contents = fs::read_to_string(&out_path).expect("read output file");
