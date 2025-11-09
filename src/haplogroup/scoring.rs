@@ -25,7 +25,7 @@ fn debug_scores_enabled() -> bool {
 fn matches_debug_node(name: &str) -> bool {
     match std::env::var("DECODINGUS_DEBUG_NODE").ok() {
         Some(filter) if !filter.is_empty() => name.contains(&filter),
-        _ => name.contains("Z39589"), // default narrow target if unset
+        _ => false, // no default hard-coded target
     }
 }
 
@@ -61,10 +61,9 @@ fn compute_branch_metrics(
 
     // Debug gating:
     // - When debug_per_locus=true, always emit per-locus lines (caller already gated by env vars and node match)
-    // - Otherwise, only emit for a small set of key tags if DECODINGUS_DEBUG_SCORES=1
-    let debug_names = ["P312", "DF13", "FGC11134", "Z39589", "FGC29071"]; 
+    // - Otherwise, emit only when DECODINGUS_DEBUG_SCORES=1 and the node matches DECODINGUS_DEBUG_NODE filter
     let debug_scores = debug_scores_enabled();
-    let debug = debug_per_locus || (debug_scores && debug_names.iter().any(|tag| haplogroup.name.contains(tag)));
+    let debug = debug_per_locus || (debug_scores && matches_debug_node(&haplogroup.name));
 
     bm.total = defining_loci.len() as u32;
 
@@ -308,11 +307,8 @@ fn experimental_calculate(
 
     // Optional debug at key splits
     let debug = std::env::var("DECODINGUS_DEBUG_SCORES").ok().as_deref() == Some("1");
-    let is_key_split = haplogroup.name == "R-L21"
-        || haplogroup.name == "R-DF13"
-        || haplogroup.name == "R-FGC11134"
-        || haplogroup.name == "R-Z39589";
-    if debug && is_key_split {
+    let debug_node = debug && matches_debug_node(&haplogroup.name);
+    if debug_node {
         eprintln!("[debug] Split at {} (depth {}):", haplogroup.name, depth);
         eprintln!("[debug]   parent bm: der={} anc={} noc={} lowq={} total={} raw={:.4} adj={:.4}", bm.derived, bm.ancestral, bm.no_calls, bm.low_quality, bm.total, bm.raw_branch_score, adjusted_branch);
 
@@ -381,7 +377,7 @@ fn experimental_calculate(
             }
         }
         if prune_child {
-            if debug && is_key_split {
+            if debug_node {
                 eprintln!(
                     "[debug]   pruning descent into {:<20} (der={} anc={} total={})",
                     child.name, cbm.derived, cbm.ancestral, cbm.total
@@ -407,7 +403,7 @@ fn experimental_calculate(
         let combined_total = current_score.total_snps + child_score.total_snps;
         let combined_score = current_score.score + (child_score.score * sibling_bonus * coh);
 
-        if debug && is_key_split {
+        if debug_node {
             eprintln!(
                 "[debug]   subtree via {:<20} final={:.4} matches={} total_snps={} depth={}",
                 child.name,

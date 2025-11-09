@@ -61,8 +61,8 @@ pub(crate) fn collect_snps<'a>(
     positions: &mut HashMap<u32, Vec<(&'a str, &'a Locus)>>,
     build_id: &str,
 ) {
-    let debug = std::env::var("DECODINGUS_DEBUG_TREE").ok().as_deref() == Some("1")
-        && (tree.name.contains("P312") || tree.name.contains("L21") || tree.name.contains("M269"));
+    let debug = std::env::var("DECODINGUS_DEBUG_TREE").ok().as_deref() == Some("1");
+    let dbg_node = std::env::var("DECODINGUS_DEBUG_NODE").ok().filter(|v| !v.is_empty());
 
     // Debug specific locus name across all haplogroups
     let debug_locus_name = std::env::var("DECODINGUS_DEBUG_SITE").ok();
@@ -148,7 +148,8 @@ pub(crate) fn project_tree_to_build(
                 &coord.ancestral,
                 &coord.derived,
             ) {
-                if debug && (parent_name.contains("P312") || parent_name.contains("L21")) {
+                let dbg_node = std::env::var("DECODINGUS_DEBUG_NODE").ok().filter(|v| !v.is_empty());
+                if debug && dbg_node.as_ref().map(|f| parent_name.contains(f)).unwrap_or(false) {
                     eprintln!("[tree.debug] {} locus {}: {} {}:{} ({}->{}) -> {} {}:{} ({}->{}){}",
                               parent_name, locus.name,
                               src_build, coord.chromosome, coord.position,
@@ -167,9 +168,12 @@ pub(crate) fn project_tree_to_build(
                 let mut coords = new_locus.coordinates.clone();
                 coords.insert(dst_build_id.to_string(), projected);
                 new_locus.coordinates = coords;
-            } else if debug && (parent_name.contains("P312") || parent_name.contains("L21")) {
-                eprintln!("[tree.debug] {} locus {}: FAILED to liftover from {} {}:{}",
-                          parent_name, locus.name, src_build, coord.chromosome, coord.position);
+            } else if debug {
+                let dbg_node = std::env::var("DECODINGUS_DEBUG_NODE").ok().filter(|v| !v.is_empty());
+                if dbg_node.as_ref().map(|f| parent_name.contains(f)).unwrap_or(false) {
+                    eprintln!("[tree.debug] {} locus {}: FAILED to liftover from {} {}:{}",
+                              parent_name, locus.name, src_build, coord.chromosome, coord.position);
+                }
             }
         }
         new_locus

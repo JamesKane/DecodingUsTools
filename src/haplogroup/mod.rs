@@ -76,12 +76,11 @@ pub fn analyze_haplogroup(
     if debug_projection {
         eprintln!("[debug] Tree projection: {} -> {}", src_build_id, bam_build.name());
 
-        // Check a few key haplogroups to verify their coordinates changed
-        let check_names = vec!["R-P312", "R-L21", "R-M269"];
-        for check_name in check_names {
-            if let Some(original_hg) = find_haplogroup(&haplogroup_tree, check_name) {
-                if let Some(projected_hg) = find_haplogroup(&projected_tree, check_name) {
-                    eprintln!("[debug] Haplogroup {} projection check:", check_name);
+        // If a specific haplogroup filter is provided, show projection details for it
+        if let Some(filter) = std::env::var("DECODINGUS_DEBUG_NODE").ok().filter(|s| !s.is_empty()) {
+            if let Some(original_hg) = find_haplogroup(&haplogroup_tree, &filter) {
+                if let Some(projected_hg) = find_haplogroup(&projected_tree, &filter) {
+                    eprintln!("[debug] Haplogroup {} projection check:", filter);
                     for locus in &original_hg.loci {
                         if let Some(orig_coord) = locus.coordinates.get(src_build_id) {
                             eprintln!("[debug]   Original ({}): {} pos={} anc={} der={}",
@@ -150,24 +149,23 @@ pub fn analyze_haplogroup(
     // No remapping needed; scoring consumes BAM-build coordinates against the projected tree
     let snp_calls = snp_calls_bam;
 
-    // Debug: dump snp_calls for P312 position if debugging
-    if debug_projection || debug_site.is_some() {
-        let p312_pos = 20_901_962u32;
-        if let Some((base, depth, freq)) = snp_calls.get(&p312_pos) {
-            eprintln!("[debug] snp_calls at P312 position {}: base='{}' depth={} freq={:.3}",
-                      p312_pos, base, depth, freq);
-        } else {
-            eprintln!("[debug] snp_calls at P312 position {}: NO CALL FOUND", p312_pos);
-        }
-
-        // Also check if positions_bam has P312
-        if let Some(entries) = positions_bam.get(&p312_pos) {
-            eprintln!("[debug] positions_bam at P312 position {} has {} entries:", p312_pos, entries.len());
-            for (hg_name, locus) in entries {
-                eprintln!("[debug]   - haplogroup='{}' locus='{}'", hg_name, locus.name);
+    // Debug: dump snp_calls for any sites selected via DECODINGUS_DEBUG_SITE
+    if (debug_projection || debug_site.is_some()) && !debug_tree_sites.is_empty() {
+        for pos in debug_tree_sites.iter() {
+            if let Some((base, depth, freq)) = snp_calls.get(pos) {
+                eprintln!("[debug] snp_calls at tracked position {}: base='{}' depth={} freq={:.3}",
+                          pos, base, depth, freq);
+            } else {
+                eprintln!("[debug] snp_calls at tracked position {}: NO CALL FOUND", pos);
             }
-        } else {
-            eprintln!("[debug] positions_bam at P312 position {}: NOT TRACKED", p312_pos);
+            if let Some(entries) = positions_bam.get(pos) {
+                eprintln!("[debug] positions_bam at tracked position {} has {} entries:", pos, entries.len());
+                for (hg_name, locus) in entries {
+                    eprintln!("[debug]   - haplogroup='{}' locus='{}'", hg_name, locus.name);
+                }
+            } else {
+                eprintln!("[debug] positions_bam at tracked position {}: NOT TRACKED", pos);
+            }
         }
     }
 
@@ -203,27 +201,29 @@ pub fn analyze_haplogroup(
                 r.depth
             );
         }
-        // Focused view for R-* lineage entries
-        let r_entries: Vec<_> = ordered_scores
-            .iter()
-            .filter(|r| r.name.starts_with("R-"))
-            .take(25)
-            .collect();
-        if !r_entries.is_empty() {
-            eprintln!("[debug] R-lineage snapshot:");
-            for r in r_entries {
-                eprintln!(
-                    "[debug] {}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                    r.name,
-                    r.score,
-                    r.matching_snps,
-                    r.ancestral_matches,
-                    r.mismatching_snps,
-                    r.no_calls,
-                    r.total_snps,
-                    r.cumulative_snps,
-                    r.depth
-                );
+        // Optional focused view filtered by DECODINGUS_DEBUG_NODE
+        if let Some(filter) = std::env::var("DECODINGUS_DEBUG_NODE").ok().filter(|s| !s.is_empty()) {
+            let entries: Vec<_> = ordered_scores
+                .iter()
+                .filter(|r| r.name.contains(&filter))
+                .take(25)
+                .collect();
+            if !entries.is_empty() {
+                eprintln!("[debug] Filtered snapshot (filter='{}'):", filter);
+                for r in entries {
+                    eprintln!(
+                        "[debug] {}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        r.name,
+                        r.score,
+                        r.matching_snps,
+                        r.ancestral_matches,
+                        r.mismatching_snps,
+                        r.no_calls,
+                        r.total_snps,
+                        r.cumulative_snps,
+                        r.depth
+                    );
+                }
             }
         }
     }

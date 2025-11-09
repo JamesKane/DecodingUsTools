@@ -151,23 +151,8 @@ fn process_region<R: Read>(
     progress: &ProgressBar,
     debug: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Debug specific position for P312 troubleshooting
-    let debug_p312 = std::env::var("DECODINGUS_DEBUG_P312").ok().filter(|v| !v.is_empty() && v != "0").is_some();
-    let p312_pos = 20_901_962u32; // CHM13v2.0 position for P312
-
-    if debug_p312 {
-        if positions.contains_key(&p312_pos) {
-            eprintln!("[caller.P312] positions HashMap CONTAINS {}", p312_pos);
-        } else {
-            eprintln!("[caller.P312] positions HashMap DOES NOT CONTAIN {} !!", p312_pos);
-        }
-    }
-    
     let mut coverage: HashMap<u32, Vec<char>> = HashMap::new();
     let mut seen_any_cov: HashSet<u32> = HashSet::new();
-
-    // Track raw observations at P312 position if debugging
-    let mut p312_raw_bases: Vec<(char, u8, bool)> = Vec::new(); // (base, qual, is_reverse_strand)
 
     for r in bam.records() {
         let record = r?;
@@ -178,7 +163,6 @@ fn process_region<R: Read>(
         if record.mapq() >= min_mapq {
             let read_len = record.seq_len() as usize;
             let cigar = record.cigar();
-            let is_reverse = record.is_reverse();
             let mut ref_pos = start_pos; // 0-based
             let mut read_pos: usize = 0;
 
@@ -198,26 +182,6 @@ fn process_region<R: Read>(
                                     if enc == 15 { continue; }
                                     let base = match enc { 1 => 'A', 2 => 'C', 4 => 'G', 8 => 'T', 15 => 'N', _ => 'N' };
 
-                                    // Debug P312 position specifically
-                                    if debug_p312 && vcf_pos == p312_pos {
-                                        let read_name = String::from_utf8_lossy(record.qname());
-                                        eprintln!("[caller.P312] READ NAME: {}", read_name);
-
-                                        // Get a few bases around this position for context
-                                        let mut context = String::new();
-                                        for offset in -2..=2i32 {
-                                            let ctx_pos = (rp as i32 + offset) as usize;
-                                            if ctx_pos < read_len {
-                                                let ctx_enc = record.seq().encoded_base(ctx_pos);
-                                                let ctx_base = match ctx_enc { 1 => 'A', 2 => 'C', 4 => 'G', 8 => 'T', 15 => 'N', _ => 'N' };
-                                                context.push(ctx_base);
-                                            }
-                                        }
-
-                                        p312_raw_bases.push((base, base_qual, is_reverse));
-                                        eprintln!("[caller.P312] RAW: ref_pos={} (1-based={}), read_pos={}, base='{}', qual={}, reverse={}, enc={}, context={}",
-                                                  ref_pos + i as u32, vcf_pos, rp, base, base_qual, is_reverse, enc, context);
-                                    }
 
                                     seen_any_cov.insert(vcf_pos);
                                     coverage.entry(vcf_pos).or_default().push(base);
@@ -235,30 +199,6 @@ fn process_region<R: Read>(
         }
     }
 
-    // P312 debugging output before calling
-    if debug_p312 && !p312_raw_bases.is_empty() {
-        eprintln!("[caller.P312] Raw bases observed at pos {}:", p312_pos);
-        let mut base_counts: HashMap<char, u32> = HashMap::new();
-        let mut strand_info: HashMap<char, (u32, u32)> = HashMap::new(); // (forward_count, reverse_count)
-        for (base, qual, is_rev) in &p312_raw_bases {
-            eprintln!("[caller.P312]   base={} qual={} reverse_strand={}", base, qual, is_rev);
-            *base_counts.entry(*base).or_insert(0) += 1;
-            let entry = strand_info.entry(*base).or_insert((0, 0));
-            if *is_rev {
-                entry.1 += 1;
-            } else {
-                entry.0 += 1;
-            }
-        }
-        eprintln!("[caller.P312] Base counts:");
-        for (base, count) in base_counts.iter() {
-            let (fwd, rev) = strand_info.get(base).unwrap_or(&(0, 0));
-            eprintln!("[caller.P312]   {}: {} (forward={}, reverse={})", base, count, fwd, rev);
-        }
-        if let Some(bases) = coverage.get(&p312_pos) {
-            eprintln!("[caller.P312] Coverage vector at {}: {:?}", p312_pos, bases);
-        }
-    }
 
     let mut passing_min_depth: Vec<u32> = Vec::new();
     let mut emitting_calls: Vec<u32> = Vec::new();
