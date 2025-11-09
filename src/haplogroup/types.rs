@@ -90,7 +90,8 @@ pub struct HaplogroupResult {
     pub(crate) name: String,
     pub(crate) score: f64,
     pub(crate) matching_snps: u32,
-    pub(crate) mismatching_snps: u32,
+    pub(crate) mismatching_snps: u32, // true conflicts (neither ancestral nor derived)
+    pub(crate) low_quality_snps: u32, // low quality calls counted separately
     pub(crate) ancestral_matches: u32,
     pub(crate) no_calls: u32,
     pub(crate) total_snps: u32,

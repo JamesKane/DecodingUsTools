@@ -75,6 +75,8 @@ pub fn analyze_haplogroup(
     let mut positions_bam: HashMap<u32, Vec<(&str, &Locus)>> = HashMap::new();
     let mut bam_to_tree_pos: HashMap<u32, u32> = HashMap::new();
     let mut tree_to_bam_pos: HashMap<u32, u32> = HashMap::new();
+    // Track whether a given TREE position maps to reverse strand in BAM build
+    let mut tree_reverse_map: HashMap<u32, bool> = HashMap::new();
 
     if bam_build.name() != tree_build_id {
         // Parse tree_build_id -> ReferenceGenome
@@ -117,25 +119,30 @@ pub fn analyze_haplogroup(
                 mapped_count += 1; // treat MT as mapped via relaxed window
             }
         } else {
-            // YDNA: batch liftover for performance
+            // YDNA: per-position liftover capturing strand to handle reverse-complement alleles
             let mut positions: Vec<u32> = tree_positions.keys().copied().collect();
             positions.sort_unstable();
-            let mapped_vec = lifter.map_many(src_chrom, &positions);
-            for (pos_tree, mapped) in positions.into_iter().zip(mapped_vec.into_iter()) {
-                if let Some(pos_bam) = mapped {
+            // Track strand per tree position (use the outer map)
+            for pos_tree in positions.into_iter() {
+                let mapped = lifter.map_pos_with_strand(src_chrom, pos_tree);
+                if let Some((pos_bam, is_rev)) = mapped {
                     if let Some(entries) = tree_positions.get(&pos_tree) {
                         positions_bam.entry(pos_bam).or_default().extend(entries.iter().copied());
                     }
                     bam_to_tree_pos.entry(pos_bam).or_insert(pos_tree);
                     tree_to_bam_pos.entry(pos_tree).or_insert(pos_bam);
+                    tree_reverse_map.insert(pos_tree, is_rev);
                     mapped_count += 1;
                 } else {
                     unmapped_count += 1;
                 }
                 if verbose_liftover && sample_hits.len() < 10 {
-                    sample_hits.push((pos_tree, mapped));
+                    sample_hits.push((pos_tree, mapped.map(|(p, _)| p)));
                 }
             }
+            // Store strand map in an environment for later steps by serializing to a static; instead, we will apply during remap below via closure capturing.
+            // We can't persist it globally; we'll use it directly in the remap section below by moving into that scope.
+            // To achieve that, we'll shadow a variable outside this block.
         }
 
         if verbose_liftover {
@@ -170,9 +177,18 @@ pub fn analyze_haplogroup(
 
     // Remap SNP calls back to tree coordinates so scoring can use tree_build_id
     let mut snp_calls: HashMap<u32, (char, u32, f64)> = HashMap::new();
-    for (bam_pos, call) in snp_calls_bam.into_iter() {
+    for (bam_pos, (base, depth, freq)) in snp_calls_bam.into_iter() {
         if let Some(tree_pos) = bam_to_tree_pos.get(&bam_pos) {
-            snp_calls.insert(*tree_pos, call);
+            // If the liftover mapping for this TREE position was on the reverse strand,
+            // complement the called base so it matches the tree's allele annotation space.
+            let is_rev = tree_reverse_map.get(tree_pos).copied().unwrap_or(false);
+            let adj_base = if is_rev {
+                let s = base.to_string();
+                Liftover::reverse_complement(&s).chars().next().unwrap_or(base)
+            } else {
+                base
+            };
+            snp_calls.insert(*tree_pos, (adj_base, depth, freq));
         }
     }
 

@@ -80,6 +80,18 @@ pub fn collect_snp_calls<R: Read>(
     positions: &mut HashMap<u32, Vec<(&str, &Locus)>>,
     snp_calls: &mut HashMap<u32, (char, u32, f64)>,
 ) -> Result<(), Box<dyn Error>> {
+    // Env-gated debug logging
+    let debug = std::env::var("DECODINGUS_DEBUG_CALLER").ok().filter(|v| !v.is_empty() && v != "0").is_some();
+
+    // Allow env overrides while preserving existing API behavior by default
+    let env_min_mapq = std::env::var("DECODINGUS_MIN_MAPQ").ok().and_then(|s| s.parse::<u8>().ok());
+    let env_min_baseq = std::env::var("DECODINGUS_MIN_BASEQ").ok().and_then(|s| s.parse::<u8>().ok());
+    let env_call_freq = std::env::var("DECODINGUS_CALL_FREQ").ok().and_then(|s| s.parse::<f64>().ok());
+
+    let min_mapq: u8 = env_min_mapq.unwrap_or(min_quality);
+    let min_baseq: u8 = env_min_baseq.unwrap_or(min_quality);
+    let call_freq: f64 = env_call_freq.unwrap_or(0.70);
+
     let progress = ProgressBar::new_spinner();
     progress.set_style(
         indicatif::ProgressStyle::default_spinner()
@@ -87,18 +99,39 @@ pub fn collect_snp_calls<R: Read>(
             .unwrap(),
     );
 
-    let target_tid = header
-        .tid(chromosome.as_bytes())
-        .ok_or_else(|| format!("Chromosome {} not found in BAM header", chromosome))? as i32;
+    let target_tid = match header.tid(chromosome.as_bytes()) {
+        Some(tid) => tid as i32,
+        None => {
+            if debug {
+                // List available reference names to aid alias debugging
+                let names: Vec<String> = (0..header.target_count())
+                    .filter_map(|i| std::str::from_utf8(header.tid2name(i)).ok().map(|s| s.to_string()))
+                    .collect();
+                eprintln!("[caller.debug] Chromosome '{}' not found. Available targets: {:?}", chromosome, names);
+            }
+            return Err(format!("Chromosome {} not found in BAM header", chromosome).into());
+        }
+    };
+
+    if debug {
+        let positions_in = positions.len();
+        eprintln!(
+            "[caller.debug] target='{}' tid={} positions_in={} min_depth={} min_mapq={} min_baseq={} call_freq={}",
+            chromosome, target_tid, positions_in, min_depth, min_mapq, min_baseq, call_freq
+        );
+    }
 
     process_region(
         bam,
         target_tid,
         positions,
         min_depth,
-        min_quality,
+        min_mapq,
+        min_baseq,
+        call_freq,
         snp_calls,
         &progress,
+        debug,
     )?;
 
     progress.finish_and_clear();
@@ -111,11 +144,15 @@ fn process_region<R: Read>(
     target_tid: i32,
     positions: &HashMap<u32, Vec<(&str, &Locus)>>,
     min_depth: u32,
-    min_quality: u8,
+    min_mapq: u8,
+    min_baseq: u8,
+    call_freq: f64,
     snp_calls: &mut HashMap<u32, (char, u32, f64)>,
     progress: &ProgressBar,
+    debug: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut coverage: HashMap<u32, Vec<char>> = HashMap::new();
+    let mut seen_any_cov: HashSet<u32> = HashSet::new();
 
     for r in bam.records() {
         let record = r?;
@@ -123,7 +160,7 @@ fn process_region<R: Read>(
         let start_pos = record.pos() as u32;
         progress.set_position(start_pos as u64);
 
-        if record.mapq() >= min_quality {
+        if record.mapq() >= min_mapq {
             let read_len = record.seq_len() as usize;
             let cigar = record.cigar();
             let mut ref_pos = start_pos; // 0-based
@@ -140,11 +177,11 @@ fn process_region<R: Read>(
                                 if rp < read_len {
                                     // Filter by per-base quality and skip 'N'
                                     let base_qual = record.qual()[rp] as u8;
-                                    if base_qual < min_quality { continue; }
+                                    if base_qual < min_baseq { continue; }
                                     let enc = record.seq().encoded_base(rp);
                                     if enc == 15 { continue; }
                                     let base = match enc { 1 => 'A', 2 => 'C', 4 => 'G', 8 => 'T', 15 => 'N', _ => 'N' };
-                                    // Do NOT reverse-complement per-read bases; alignment already orients them
+                                    seen_any_cov.insert(vcf_pos);
                                     coverage.entry(vcf_pos).or_default().push(base);
                                 }
                             }
@@ -160,22 +197,60 @@ fn process_region<R: Read>(
         }
     }
 
-    for (pos, bases) in coverage {
+    let mut passing_min_depth: Vec<u32> = Vec::new();
+    let mut emitting_calls: Vec<u32> = Vec::new();
+
+    for (pos, bases) in coverage.iter() {
+        if bases.len() >= min_depth as usize {
+            passing_min_depth.push(*pos);
+            let mut base_counts: HashMap<char, u32> = HashMap::new();
+            for base in bases.iter() { *base_counts.entry(*base).or_insert(0) += 1; }
+            if let Some((_, &count)) = base_counts.iter().max_by_key(|&(_, c)| c) {
+                let total = bases.len() as u32;
+                let freq = count as f64 / total as f64;
+                if freq >= call_freq { emitting_calls.push(*pos); }
+            }
+        }
+    }
+
+    // Emit calls after diagnostics collection
+    for (pos, bases) in coverage.into_iter() {
         if bases.len() >= min_depth as usize {
             let mut base_counts: HashMap<char, u32> = HashMap::new();
-
-            for base in &bases {
-                *base_counts.entry(*base).or_insert(0) += 1;
-            }
-
+            for base in &bases { *base_counts.entry(*base).or_insert(0) += 1; }
             if let Some((&base, &count)) = base_counts.iter().max_by_key(|&(_, count)| count) {
                 let total = bases.len() as u32;
                 let freq = count as f64 / total as f64;
-
-                if freq >= 0.7 {
+                if freq >= call_freq {
                     snp_calls.insert(pos, (base, total, freq));
                 }
             }
+        }
+    }
+
+    if debug {
+        let positions_in = positions.len() as u32;
+        let seen_cov = seen_any_cov.len() as u32;
+        let pass_depth = passing_min_depth.len() as u32;
+        let emit = emitting_calls.len() as u32;
+        eprintln!(
+            "[caller.debug] positions_in={} seen_any_coverage={} passing_min_depth={} emitting_calls={}",
+            positions_in, seen_cov, pass_depth, emit
+        );
+        // Print first N example tallies
+        let mut printed = 0;
+        let maxn = 5;
+        for pos in passing_min_depth.into_iter().take(maxn) {
+            // reconstruct counts for printing
+            // Note: since coverage moved, re-tally from snp_calls or skip if absent
+            if let Some((base, total, freq)) = snp_calls.get(&pos) {
+                eprintln!(
+                    "[caller.debug] example pos={} call={} total={} freq={:.3}",
+                    pos, base, total, freq
+                );
+            }
+            printed += 1;
+            if printed >= maxn { break; }
         }
     }
 

@@ -219,6 +219,108 @@ impl Liftover {
         None
     }
 
+    /// Map a position and return both the target position and whether strand is reversed.
+    /// Returns (target_pos_1based, is_reverse_strand) or None if mapping fails.
+    /// Use this when you need to know if alleles should be reverse complemented.
+    pub fn map_pos_with_strand(&self, query_chrom: &str, query_pos_1based: u32) -> Option<(u32, bool)> {
+        // Identity shortcut when no chains loaded
+        if self.machine.is_none() {
+            return Some((query_pos_1based, false));
+        }
+        let machine = self.machine.as_ref().unwrap();
+        let verbose = std::env::var("DECODINGUS_VERBOSE_LIFTOVER").ok().filter(|v| !v.is_empty() && v != "0").is_some();
+
+        let mut try_map = |chrom: &str| -> Option<(u32, bool)> {
+            let start0 = (query_pos_1based as u64).saturating_sub(1);
+            let end0 = start0 + 1;
+            if verbose { 
+                eprintln!("[liftover] query base: {}:{} (0-based {}..{})", chrom, query_pos_1based, start0, end0); 
+            }
+            
+            let q = format!("{}:+:{}-{}", chrom, start0, end0);
+            let interval: Interval = match q.parse() {
+                Ok(iv) => iv,
+                Err(_) => {
+                    if verbose { 
+                        eprintln!("[liftover] failed to parse interval {}", q); 
+                    }
+                    return None;
+                }
+            };
+            
+            let results_opt = machine.liftover(interval);
+            if let Some(results) = results_opt {
+                if verbose {
+                    eprintln!("[liftover] got {} results for {}:{}", results.len(), chrom, query_pos_1based);
+                }
+                
+                for r in results {
+                    let s = r.to_string();
+                    if verbose { 
+                        eprintln!("[liftover]   result: {}", s); 
+                    }
+                    
+                    // Parse format: "chrom:strand:start-end"
+                    let parts: Vec<&str> = s.split(':').collect();
+                    if parts.len() >= 3 {
+                        let strand = parts[1];
+                        let is_reverse = strand == "-";
+                        
+                        if let Some((start_s, _end_s)) = parts[2].split_once('-') {
+                            if let Ok(start0_tgt) = start_s.parse::<u64>() {
+                                let pos = (start0_tgt as u32).saturating_add(1);
+                                if verbose {
+                                    eprintln!("[liftover]   mapped to pos {} (strand {})", pos, strand);
+                                }
+                                return Some((pos, is_reverse));
+                            }
+                        }
+                    }
+                }
+            } else if verbose {
+                eprintln!("[liftover] no results for {}:{}", chrom, query_pos_1based);
+            }
+            
+            None
+        };
+
+        // Try the provided chromosome first
+        if let Some(result) = try_map(query_chrom) { return Some(result); }
+        
+        // Fallback aliases
+        if query_chrom.starts_with("chr") {
+            let bare = &query_chrom[3..];
+            if let Some(result) = try_map(bare) { return Some(result); }
+        } else {
+            let prefixed = format!("chr{}", query_chrom);
+            if let Some(result) = try_map(&prefixed) { return Some(result); }
+        }
+
+        if verbose { 
+            eprintln!("[liftover] no mapping for {}:{}", query_chrom, query_pos_1based); 
+        }
+        None
+    }
+
+    /// Reverse complement a DNA base
+    fn reverse_complement_base(base: char) -> char {
+        match base.to_ascii_uppercase() {
+            'A' => 'T',
+            'T' => 'A',
+            'C' => 'G',
+            'G' => 'C',
+            other => other,
+        }
+    }
+
+    /// Reverse complement a DNA sequence (allele)
+    pub fn reverse_complement(seq: &str) -> String {
+        seq.chars()
+            .rev()
+            .map(|c| Self::reverse_complement_base(c))
+            .collect()
+    }
+
     /// Batch-map many 1-based positions on a chromosome; preserves input order.
     pub fn map_many(&self, chrom: &str, positions_1based: &[u32]) -> Vec<Option<u32>> {
         positions_1based.iter().map(|p| self.map_pos(chrom, *p)).collect()
