@@ -4,7 +4,7 @@ mod tree;
 pub(crate) mod types;
 mod validation;
 
-use crate::haplogroup::types::{Haplogroup, HaplogroupResult, Locus};
+use crate::haplogroup::types::{Haplogroup, HaplogroupResult, Locus, LociType};
 use crate::utils::cache::TreeType;
 use crate::utils::liftover::Liftover;
 use crate::types::ReferenceGenome;
@@ -246,6 +246,10 @@ pub fn analyze_haplogroup(
     }
 
     for result in ordered_scores {
+        // Recompute branch-local metrics for reporting to avoid cumulative leakage
+        let (b_match, b_mismatch, b_anc, b_nocall, b_total) =
+            compute_branch_local_metrics(&result.name, &projected_tree, &snp_calls, build_id);
+
         if show_snps {
             let (matching_snps, mismatching_snps, no_call_snps) =
                 get_snp_details(&result.name, &projected_tree, &snp_calls, build_id);
@@ -254,11 +258,11 @@ pub fn analyze_haplogroup(
                 "{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 result.name,
                 result.score,
-                result.matching_snps,
-                result.mismatching_snps,
-                result.ancestral_matches,
-                result.no_calls,
-                result.total_snps,
+                b_match,
+                b_mismatch,
+                b_anc,
+                b_nocall,
+                b_total,
                 result.cumulative_snps,
                 result.depth,
                 matching_snps,
@@ -271,11 +275,11 @@ pub fn analyze_haplogroup(
                 "{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 result.name,
                 result.score,
-                result.matching_snps,
-                result.mismatching_snps,
-                result.ancestral_matches,
-                result.no_calls,
-                result.total_snps,
+                b_match,
+                b_mismatch,
+                b_anc,
+                b_nocall,
+                b_total,
                 result.cumulative_snps,
                 result.depth
             )?;
@@ -670,4 +674,63 @@ fn collect_scored_paths(scores: Vec<HaplogroupResult>, tree: &Haplogroup) -> Vec
     ordered_results.extend(remaining);
 
     ordered_results
+}
+
+
+// Helper: compute branch-local metrics for a single haplogroup name for reporting purposes
+// Returns (matching_derived, mismatching_conflicts, ancestral_matches, no_calls, total_snps)
+fn compute_branch_local_metrics(
+    haplogroup_name: &str,
+    tree: &Haplogroup,
+    snp_calls: &HashMap<u32, (char, u32, f64)>,
+    build_id: &str,
+) -> (u32, u32, u32, u32, u32) {
+    let mut matching: u32 = 0;
+    let mut mismatching: u32 = 0;
+    let mut ancestral: u32 = 0;
+    let mut no_calls: u32 = 0;
+    let mut total: u32 = 0;
+
+    if let Some(node) = find_haplogroup(tree, haplogroup_name) {
+        for locus in &node.loci {
+            if matches!(locus.loci_type, LociType::SNP) {
+                if let Some(coord) = locus.coordinates.get(build_id) {
+                    total += 1;
+                    match snp_calls.get(&coord.position) {
+                        Some((called_base, depth_called, _freq)) => {
+                            if *depth_called < 1 {
+                                no_calls += 1;
+                                continue;
+                            }
+                            let base = called_base.to_ascii_uppercase();
+                            let der = coord
+                                .derived
+                                .chars()
+                                .next()
+                                .unwrap_or('N')
+                                .to_ascii_uppercase();
+                            let anc = coord
+                                .ancestral
+                                .chars()
+                                .next()
+                                .unwrap_or('N')
+                                .to_ascii_uppercase();
+                            if base == der {
+                                matching += 1;
+                            } else if base == anc {
+                                ancestral += 1;
+                            } else {
+                                mismatching += 1;
+                            }
+                        }
+                        None => {
+                            no_calls += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    (matching, mismatching, ancestral, no_calls, total)
 }
