@@ -132,4 +132,3 @@ impl TryFrom<ApiVariant> for Locus {
         })
     }
 }
-

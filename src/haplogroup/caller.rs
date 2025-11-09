@@ -2,8 +2,8 @@ use crate::haplogroup::types::Locus;
 use indicatif::ProgressBar;
 use rust_htslib::bam::{self, Read};
 use std::collections::HashMap;
-use std::error::Error;
 use std::collections::HashSet;
+use std::error::Error;
 
 pub type BaseCounts = HashMap<char, u32>;
 
@@ -19,7 +19,8 @@ pub fn tally_bases_at_positions<R: Read, I: IntoIterator<Item = u32>>(
 ) -> Result<HashMap<u32, BaseCounts>, Box<dyn Error>> {
     let target_tid = header
         .tid(chromosome.as_bytes())
-        .ok_or_else(|| format!("Chromosome {} not found in BAM header", chromosome))? as i32;
+        .ok_or_else(|| format!("Chromosome {} not found in BAM header", chromosome))?
+        as i32;
 
     let mut wanted: HashSet<u32> = positions.into_iter().collect();
     if wanted.is_empty() {
@@ -29,8 +30,12 @@ pub fn tally_bases_at_positions<R: Read, I: IntoIterator<Item = u32>>(
 
     for r in bam.records() {
         let record = r?;
-        if record.tid() != target_tid { continue; }
-        if record.mapq() < min_mapq { continue; }
+        if record.tid() != target_tid {
+            continue;
+        }
+        if record.mapq() < min_mapq {
+            continue;
+        }
         let start_pos = record.pos() as u32; // 0-based
         let read_len = record.seq_len() as usize;
         let cigar = record.cigar();
@@ -48,20 +53,39 @@ pub fn tally_bases_at_positions<R: Read, I: IntoIterator<Item = u32>>(
                             if rp < read_len {
                                 // Per-base quality filter and N masking
                                 let base_qual = record.qual()[rp] as u8;
-                                if base_qual < min_mapq { continue; }
+                                if base_qual < min_mapq {
+                                    continue;
+                                }
                                 let enc = record.seq().encoded_base(rp);
-                                if enc == 15 { continue; } // skip 'N'
-                                let base = match enc { 1 => 'A', 2 => 'C', 4 => 'G', 8 => 'T', 15 => 'N', _ => 'N' };
+                                if enc == 15 {
+                                    continue;
+                                } // skip 'N'
+                                let base = match enc {
+                                    1 => 'A',
+                                    2 => 'C',
+                                    4 => 'G',
+                                    8 => 'T',
+                                    15 => 'N',
+                                    _ => 'N',
+                                };
                                 // Do NOT reverse-complement: base calls are in reference orientation per CIGAR/alignment
-                                *coverage.entry(vcf_pos).or_default().entry(base).or_insert(0) += 1;
+                                *coverage
+                                    .entry(vcf_pos)
+                                    .or_default()
+                                    .entry(base)
+                                    .or_insert(0) += 1;
                             }
                         }
                         ref_pos += 1;
                     }
                     read_pos += len;
                 }
-                'D' | 'N' => { ref_pos += op.len(); }
-                'I' | 'S' => { read_pos += op.len() as usize; }
+                'D' | 'N' => {
+                    ref_pos += op.len();
+                }
+                'I' | 'S' => {
+                    read_pos += op.len() as usize;
+                }
                 _ => {}
             }
         }
@@ -70,6 +94,100 @@ pub fn tally_bases_at_positions<R: Read, I: IntoIterator<Item = u32>>(
     Ok(coverage)
 }
 
+/// Collect SNP (Single Nucleotide Polymorphism) calls by analyzing BAM file regions.
+///
+/// This function processes a specified chromosome and certain positions within a BAM file
+/// to collect SNP calls, respecting minimum depth, quality thresholds, and allele frequencies.
+/// The results are stored in a provided `HashMap` for subsequent analysis.
+///
+/// # Parameters
+///
+/// * `min_depth`: Minimum read depth required to include a position in the analysis.
+/// * `min_quality`: Minimum quality score used as the default for MAPQ (mapping quality)
+///    and base quality filtering thresholds (can be overridden via environment variables).
+/// * `bam`: Mutable reference to a `bam::Reader` or any compatible stream implementing the `Read` trait.
+/// * `header`: Reference to the BAM header (`bam::HeaderView`) for chromosome and metadata lookup.
+/// * `_build_id`: A string for additional metadata (e.g., genome reference build version).
+/// * `chromosome`: A string specifying the target chromosome to analyze.
+/// * `positions`: A mutable `HashMap` mapping position coordinates (`u32`) to associated data,
+///    represented as a vector of tuples containing locus metadata (e.g., sample identifiers).
+/// * `snp_calls`: A mutable `HashMap` where detected SNP details will be collected. Each SNP is stored
+///    as a tuple containing the alternate allele (`char`), read count (`u32`), and allele frequency (`f64`).
+///
+/// # Returns
+///
+/// This function returns `Ok(())` on success or an error encapsulated in a `Box<dyn Error>` if problems occur.
+/// Errors may include missing chromosome data in the BAM header or invalid configurations in environment variables.
+///
+/// # Environment Variables
+///
+/// Optional environment variables can be set to override specific thresholds and enable debugging:
+/// * `DECODINGUS_DEBUG_CALLER`: Enables debug logs if set and non-empty (e.g., `1`).
+/// * `DECODINGUS_MIN_MAPQ`: Overrides the minimum MAPQ threshold. Must be a valid `u8`.
+/// * `DECODINGUS_MIN_BASEQ`: Overrides the minimum base quality threshold. Must be a valid `u8`.
+/// * `DECODINGUS_CALL_FREQ`: Overrides the default minimum allele frequency for SNP calls. Must be a valid `f64`.
+///
+/// # Behavior
+///
+/// 1. Queries the BAM header for the target chromosome ID (`tid`). If the chromosome is not found,
+///    the function will list available chromosome names (if debugging is enabled) and return an error.
+/// 2. Processes positions stored in the `positions` map and filters based on the provided thresholds
+///    (`min_depth`, `min_quality`, `DECODINGUS_MIN_MAPQ`, etc.).
+/// 3. Aggregates SNP call data (alternate allele, read count, allele frequency) into the `snp_calls` map.
+/// 4. Progress is displayed using an interactive spinner, facilitating better traceability during long runs.
+///
+/// # Debugging
+///
+/// When `DECODINGUS_DEBUG_CALLER` is enabled, additional debugging details are printed to `stderr`,
+/// including available chromosome names, input parameter details, and intermediate results. This is helpful
+/// for verifying configurations, troubleshooting missing references, or analyzing filtering behavior.
+///
+/// # Errors
+///
+/// Errors may include:
+/// * Missing chromosome in BAM header (e.g., chromosome not found in the reference).
+/// * Invalid or malformed thresholds provided via environment variables.
+///
+/// # Example
+///
+/// ```rust
+/// use std::collections::HashMap;
+/// use std::fs::File;
+/// use bio::io::bam::{self, Reader};
+///
+/// let min_depth = 10;
+/// let min_quality = 30;
+/// let chromosome = "chr1".to_string();
+/// let mut positions: HashMap<u32, Vec<(&str, &Locus)>> = HashMap::new();
+/// let mut snp_calls: HashMap<u32, (char, u32, f64)> = HashMap::new();
+///
+/// let mut bam_reader = bam::Reader::from_path("example.bam").unwrap();
+/// let header = bam_reader.header().clone();
+/// let build_id = "GRCh38".to_string();
+///
+/// collect_snp_calls(
+///     min_depth,
+///     min_quality,
+///     &mut bam_reader,
+///     &header,
+///     build_id,
+///     chromosome,
+///     &mut positions,
+///     &mut snp_calls
+/// ).unwrap();
+/// ```
+///
+/// # Dependencies
+///
+/// * Uses `indicatif::ProgressBar` for displaying progress.
+/// * Assumes the `bio` crate is used for BAM file handling.
+/// * Requires proper setup of `std::env` to read optional overrides via environment variables.
+///
+/// # Notes
+///
+/// This function relies on internal helper function `process_region` to handle chunk-wise processing
+/// of BAM records. Ensure this helper function is correctly implemented and adheres to the same
+/// filtering logic to avoid discrepancies.
 pub fn collect_snp_calls<R: Read>(
     min_depth: u32,
     min_quality: u8,
@@ -81,12 +199,21 @@ pub fn collect_snp_calls<R: Read>(
     snp_calls: &mut HashMap<u32, (char, u32, f64)>,
 ) -> Result<(), Box<dyn Error>> {
     // Env-gated debug logging
-    let debug = std::env::var("DECODINGUS_DEBUG_CALLER").ok().filter(|v| !v.is_empty() && v != "0").is_some();
+    let debug = std::env::var("DECODINGUS_DEBUG_CALLER")
+        .ok()
+        .filter(|v| !v.is_empty() && v != "0")
+        .is_some();
 
     // Allow env overrides while preserving existing API behavior by default
-    let env_min_mapq = std::env::var("DECODINGUS_MIN_MAPQ").ok().and_then(|s| s.parse::<u8>().ok());
-    let env_min_baseq = std::env::var("DECODINGUS_MIN_BASEQ").ok().and_then(|s| s.parse::<u8>().ok());
-    let env_call_freq = std::env::var("DECODINGUS_CALL_FREQ").ok().and_then(|s| s.parse::<f64>().ok());
+    let env_min_mapq = std::env::var("DECODINGUS_MIN_MAPQ")
+        .ok()
+        .and_then(|s| s.parse::<u8>().ok());
+    let env_min_baseq = std::env::var("DECODINGUS_MIN_BASEQ")
+        .ok()
+        .and_then(|s| s.parse::<u8>().ok());
+    let env_call_freq = std::env::var("DECODINGUS_CALL_FREQ")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok());
 
     let min_mapq: u8 = env_min_mapq.unwrap_or(min_quality);
     let min_baseq: u8 = env_min_baseq.unwrap_or(min_quality);
@@ -105,9 +232,16 @@ pub fn collect_snp_calls<R: Read>(
             if debug {
                 // List available reference names to aid alias debugging
                 let names: Vec<String> = (0..header.target_count())
-                    .filter_map(|i| std::str::from_utf8(header.tid2name(i)).ok().map(|s| s.to_string()))
+                    .filter_map(|i| {
+                        std::str::from_utf8(header.tid2name(i))
+                            .ok()
+                            .map(|s| s.to_string())
+                    })
                     .collect();
-                eprintln!("[caller.debug] Chromosome '{}' not found. Available targets: {:?}", chromosome, names);
+                eprintln!(
+                    "[caller.debug] Chromosome '{}' not found. Available targets: {:?}",
+                    chromosome, names
+                );
             }
             return Err(format!("Chromosome {} not found in BAM header", chromosome).into());
         }
@@ -122,22 +256,13 @@ pub fn collect_snp_calls<R: Read>(
     }
 
     process_region(
-        bam,
-        target_tid,
-        positions,
-        min_depth,
-        min_mapq,
-        min_baseq,
-        call_freq,
-        snp_calls,
-        &progress,
-        debug,
+        bam, target_tid, positions, min_depth, min_mapq, min_baseq, call_freq, snp_calls,
+        &progress, debug,
     )?;
 
     progress.finish_and_clear();
     Ok(())
 }
-
 
 fn process_region<R: Read>(
     bam: &mut R,
@@ -156,7 +281,9 @@ fn process_region<R: Read>(
 
     for r in bam.records() {
         let record = r?;
-        if record.tid() != target_tid { continue; }
+        if record.tid() != target_tid {
+            continue;
+        }
         let start_pos = record.pos() as u32;
         progress.set_position(start_pos as u64);
 
@@ -177,11 +304,21 @@ fn process_region<R: Read>(
                                 if rp < read_len {
                                     // Filter by per-base quality and skip 'N'
                                     let base_qual = record.qual()[rp] as u8;
-                                    if base_qual < min_baseq { continue; }
+                                    if base_qual < min_baseq {
+                                        continue;
+                                    }
                                     let enc = record.seq().encoded_base(rp);
-                                    if enc == 15 { continue; }
-                                    let base = match enc { 1 => 'A', 2 => 'C', 4 => 'G', 8 => 'T', 15 => 'N', _ => 'N' };
-
+                                    if enc == 15 {
+                                        continue;
+                                    }
+                                    let base = match enc {
+                                        1 => 'A',
+                                        2 => 'C',
+                                        4 => 'G',
+                                        8 => 'T',
+                                        15 => 'N',
+                                        _ => 'N',
+                                    };
 
                                     seen_any_cov.insert(vcf_pos);
                                     coverage.entry(vcf_pos).or_default().push(base);
@@ -191,14 +328,17 @@ fn process_region<R: Read>(
                         ref_pos += len as u32;
                         read_pos += len;
                     }
-                    'D' | 'N' => { ref_pos += op.len(); }
-                    'I' | 'S' => { read_pos += op.len() as usize; }
+                    'D' | 'N' => {
+                        ref_pos += op.len();
+                    }
+                    'I' | 'S' => {
+                        read_pos += op.len() as usize;
+                    }
                     _ => {}
                 }
             }
         }
     }
-
 
     let mut passing_min_depth: Vec<u32> = Vec::new();
     let mut emitting_calls: Vec<u32> = Vec::new();
@@ -207,11 +347,15 @@ fn process_region<R: Read>(
         if bases.len() >= min_depth as usize {
             passing_min_depth.push(*pos);
             let mut base_counts: HashMap<char, u32> = HashMap::new();
-            for base in bases.iter() { *base_counts.entry(*base).or_insert(0) += 1; }
+            for base in bases.iter() {
+                *base_counts.entry(*base).or_insert(0) += 1;
+            }
             if let Some((_, &count)) = base_counts.iter().max_by_key(|&(_, c)| c) {
                 let total = bases.len() as u32;
                 let freq = count as f64 / total as f64;
-                if freq >= call_freq { emitting_calls.push(*pos); }
+                if freq >= call_freq {
+                    emitting_calls.push(*pos);
+                }
             }
         }
     }
@@ -220,7 +364,9 @@ fn process_region<R: Read>(
     for (pos, bases) in coverage.into_iter() {
         if bases.len() >= min_depth as usize {
             let mut base_counts: HashMap<char, u32> = HashMap::new();
-            for base in &bases { *base_counts.entry(*base).or_insert(0) += 1; }
+            for base in &bases {
+                *base_counts.entry(*base).or_insert(0) += 1;
+            }
             if let Some((&base, &count)) = base_counts.iter().max_by_key(|&(_, count)| count) {
                 let total = bases.len() as u32;
                 let freq = count as f64 / total as f64;
@@ -253,7 +399,9 @@ fn process_region<R: Read>(
                 );
             }
             printed += 1;
-            if printed >= maxn { break; }
+            if printed >= maxn {
+                break;
+            }
         }
     }
 

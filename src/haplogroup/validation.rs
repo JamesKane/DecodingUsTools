@@ -7,7 +7,7 @@ pub fn validate_reference<R: Read>(
     tree_type: TreeType,
 ) -> Result<(ReferenceGenome, String), Box<dyn std::error::Error>> {
     let header = bam.header();
-    
+
     // Detect reference genome from BAM header
     let genome = ReferenceGenome::from_header(header)
         .ok_or("Could not determine reference genome from BAM header")?;
@@ -18,16 +18,19 @@ pub fn validate_reference<R: Read>(
         (TreeType::YDNA, "GRCh37") => vec!["Y", "chrY"], // hg19 == GRCh37; allow both
         (TreeType::YDNA, "T2T-CHM13v2.0") => vec!["Y", "chrY", "CP086569.2", "NC_060948.1"],
         (TreeType::MTDNA, _) => vec!["chrM", "MT", "M", "NC_001807"],
-        _ => vec![]
+        _ => vec![],
     };
 
     // Find the first matching sequence name
-    let sequence_name = possible_names.iter()
+    let sequence_name = possible_names
+        .iter()
         .find(|&name| header.tid(name.as_bytes()).is_some())
-        .ok_or_else(|| format!(
-            "No valid sequence found in BAM. Tried: {}",
-            possible_names.join(", ")
-        ))?;
+        .ok_or_else(|| {
+            format!(
+                "No valid sequence found in BAM. Tried: {}",
+                possible_names.join(", ")
+            )
+        })?;
 
     println!("Found sequence as: {}", sequence_name);
 
