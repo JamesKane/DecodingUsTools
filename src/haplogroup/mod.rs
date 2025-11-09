@@ -48,20 +48,38 @@ pub fn analyze_haplogroup(
 
     // Determine the build used by the tree and the build of the BAM
     let bam_build = genome; // ReferenceGenome
-    let tree_build_id = match tree_type {
-        TreeType::YDNA => "GRCh38", // FTDNA provides GRCh38; DecodingUs also supports others but GRCh38 is common
+    let src_build_id = match tree_type {
+        TreeType::YDNA => "GRCh38", // FTDNA provides GRCh38
         TreeType::MTDNA => "rCRS",
     };
 
-    // Create map of positions to check in TREE coordinates
-    let mut tree_positions: HashMap<u32, Vec<(&str, &Locus)>> = HashMap::new();
-    tree::collect_snps(&haplogroup_tree, &mut tree_positions, tree_build_id);
+    // Build liftover from tree's build to BAM build
+    let lifter = if tree_type == TreeType::MTDNA {
+        // rCRS identity mapping with chromosome aliasing handled downstream
+        Liftover::identity()
+    } else {
+        // Parse src_build_id to ReferenceGenome
+        let source = match src_build_id {
+            "GRCh38" => ReferenceGenome::GRCh38,
+            "GRCh37" => ReferenceGenome::GRCh37,
+            _ => ReferenceGenome::GRCh38,
+        };
+        Liftover::load_or_fetch(source.clone(), bam_build.clone())?
+    };
+
+    // Project the tree to the BAM's build; this normalizes positions and alleles (strand-aware)
+    let projected_tree = tree::project_tree_to_build(&haplogroup_tree, src_build_id, bam_build.clone(), &lifter);
+
+    // Collect positions directly from the projected tree in BAM build coordinates
+    let build_id = bam_build.name();
+    let mut positions_bam: HashMap<u32, Vec<(&str, &Locus)>> = HashMap::new();
+    tree::collect_snps(&projected_tree, &mut positions_bam, build_id);
 
     // Optional: focus debug on a specific site by locus name (e.g., M526)
     let debug_site = std::env::var("DECODINGUS_DEBUG_SITE").ok();
     let mut debug_tree_sites: Vec<u32> = Vec::new();
     if let Some(ref site_tag) = debug_site {
-        for (pos, entries) in tree_positions.iter() {
+        for (pos, entries) in positions_bam.iter() {
             if entries.iter().any(|(_, locus)| locus.name.contains(site_tag)) {
                 debug_tree_sites.push(*pos);
             }
@@ -71,185 +89,37 @@ pub fn analyze_haplogroup(
         }
     }
 
-    // If BAM build differs from tree build, liftover positions to BAM coordinates; also build reverse map
-    let mut positions_bam: HashMap<u32, Vec<(&str, &Locus)>> = HashMap::new();
-    let mut bam_to_tree_pos: HashMap<u32, u32> = HashMap::new();
-    let mut tree_to_bam_pos: HashMap<u32, u32> = HashMap::new();
-    // Track whether a given TREE position maps to reverse strand in BAM build
-    let mut tree_reverse_map: HashMap<u32, bool> = HashMap::new();
-
-    if bam_build.name() != tree_build_id {
-        // Parse tree_build_id -> ReferenceGenome
-        let source = match tree_build_id {
-            "GRCh38" => ReferenceGenome::GRCh38,
-            "GRCh37" => ReferenceGenome::GRCh37,
-            _ => ReferenceGenome::GRCh38, // fallback
-        };
-        // For mitochondrial DNA, UCSC chain files are not reliable across accessions
-        // (e.g., rCRS NC_012920 vs. UCSC NC_001807 label). Coordinates are the same length
-        // and typically align 1:1, so use identity liftover while allowing chromosome aliasing.
-        let lifter = if tree_type == TreeType::MTDNA {
-            Liftover::identity()
-        } else {
-            Liftover::load_or_fetch(source.clone(), bam_build.clone())?
-        };
-        // Determine source chromosome name to use for liftover
-        let src_chrom = if tree_type == TreeType::YDNA { "chrY" } else { "chrM" };
-
-        // Optional verbose liftover diagnostics for Y/MT mapping.
-        let verbose_liftover = std::env::var("DECODINGUS_VERBOSE_LIFTOVER").ok().as_deref() == Some("1");
-        let mut mapped_count: u32 = 0;
-        let mut unmapped_count: u32 = 0;
-        let mut sample_hits: Vec<(u32, Option<u32>)> = Vec::new();
-
-        if tree_type == TreeType::MTDNA {
-            // Original MT logic with relaxed window around base position
-            for (pos_tree, entries) in tree_positions.iter() {
-                let base = lifter.map_pos(src_chrom, *pos_tree).unwrap_or(*pos_tree);
-                let start = base.saturating_sub(5);
-                let end = base + 5;
-                for pos_bam in start..=end {
-                    positions_bam.entry(pos_bam).or_default().extend(entries.iter().copied());
-                    // Only map back to the same tree position; first write wins
-                    bam_to_tree_pos.entry(pos_bam).or_insert(*pos_tree);
-                }
-                if verbose_liftover && sample_hits.len() < 10 {
-                    sample_hits.push((*pos_tree, Some(base)));
-                }
-                mapped_count += 1; // treat MT as mapped via relaxed window
-            }
-        } else {
-            // YDNA: per-position liftover capturing strand to handle reverse-complement alleles
-            let mut positions: Vec<u32> = tree_positions.keys().copied().collect();
-            positions.sort_unstable();
-            // Track strand per tree position (use the outer map)
-            for pos_tree in positions.into_iter() {
-                let mapped = lifter.map_pos_with_strand(src_chrom, pos_tree);
-                if let Some((pos_bam, is_rev)) = mapped {
-                    if let Some(entries) = tree_positions.get(&pos_tree) {
-                        positions_bam.entry(pos_bam).or_default().extend(entries.iter().copied());
-                    }
-                    bam_to_tree_pos.entry(pos_bam).or_insert(pos_tree);
-                    tree_to_bam_pos.entry(pos_tree).or_insert(pos_bam);
-                    tree_reverse_map.insert(pos_tree, is_rev);
-                    mapped_count += 1;
-                } else {
-                    unmapped_count += 1;
-                }
-                if verbose_liftover && sample_hits.len() < 10 {
-                    sample_hits.push((pos_tree, mapped.map(|(p, _)| p)));
-                }
-            }
-            // Store strand map in an environment for later steps by serializing to a static; instead, we will apply during remap below via closure capturing.
-            // We can't persist it globally; we'll use it directly in the remap section below by moving into that scope.
-            // To achieve that, we'll shadow a variable outside this block.
-        }
-
-        if verbose_liftover {
-            eprintln!(
-                "[liftover] {} -> {} on {}: mapped={}, unmapped={}, examples={:?}",
-                tree_build_id,
-                bam_build.name(),
-                src_chrom,
-                mapped_count,
-                unmapped_count,
-                sample_hits
-            );
-        }
-    } else {
-        positions_bam = tree_positions.clone();
-        for (p, _) in &positions_bam { bam_to_tree_pos.insert(*p, *p); }
-    }
-
     let mut snp_calls_bam: HashMap<u32, (char, u32, f64)> = HashMap::new();
 
-    // Collect SNP calls against BAM coordinates
+    // Collect SNP calls directly at BAM coordinates
     caller::collect_snp_calls(
         min_depth,
         min_quality,
         &mut bam,
         &header,
-        bam_build.name().to_string(),
+        build_id.to_string(),
         chromosome.clone(),
         &mut positions_bam,
         &mut snp_calls_bam,
     )?;
 
-    // Remap SNP calls back to tree coordinates so scoring can use tree_build_id
-    let mut snp_calls: HashMap<u32, (char, u32, f64)> = HashMap::new();
-    for (bam_pos, (base, depth, freq)) in snp_calls_bam.into_iter() {
-        if let Some(tree_pos) = bam_to_tree_pos.get(&bam_pos) {
-            // If the liftover mapping for this TREE position was on the reverse strand,
-            // complement the called base so it matches the tree's allele annotation space.
-            let is_rev = tree_reverse_map.get(tree_pos).copied().unwrap_or(false);
-            let adj_base = if is_rev {
-                let s = base.to_string();
-                Liftover::reverse_complement(&s).chars().next().unwrap_or(base)
-            } else {
-                base
-            };
-            snp_calls.insert(*tree_pos, (adj_base, depth, freq));
-        }
-    }
-
-    // Targeted debug for a specific locus tag (e.g., M526) without probes
-    if let Some(ref site_tag) = debug_site {
-        // Reopen BAM for a fresh read over specific positions
-        if !debug_tree_sites.is_empty() {
-            let mut bam_dbg = bam::Reader::from_path(&bam_file)?;
-            let header_dbg = bam_dbg.header().clone();
-            for tp in &debug_tree_sites {
-                if let Some(bp) = tree_to_bam_pos.get(tp) {
-                    // Tally base counts at the mapped BAM position
-                    let counts = caller::tally_bases_at_positions(
-                        &mut bam_dbg,
-                        &header_dbg,
-                        &chromosome,
-                        std::iter::once(*bp),
-                        min_quality,
-                    )?;
-                    let counts_str = if let Some(c) = counts.get(bp) {
-                        let mut v: Vec<(char, u32)> = c.iter().map(|(b, n)| (*b, *n)).collect();
-                        v.sort_by_key(|(b, _)| *b);
-                        format!("{:?}", v)
-                    } else { "None".to_string() };
-                    let call_bam = snp_calls.get(tp).cloned();
-                    eprintln!(
-                        "[debug] Site {} tree_pos={} -> bam_pos={} counts={} call={:?}",
-                        site_tag, tp, bp, counts_str, call_bam
-                    );
-                    // Print tree allele annotations at this site
-                    if let Some(entries) = tree_positions.get(tp) {
-                        for (_, locus) in entries {
-                            if let Some(coord) = locus.coordinates.get(tree_build_id) {
-                                eprintln!(
-                                    "[debug] Locus {} alleles (tree={}): ancestral={}, derived={}",
-                                    locus.name, tree_build_id, coord.ancestral, coord.derived
-                                );
-                            }
-                        }
-                    }
-                } else {
-                    eprintln!("[debug] Site {} tree_pos={} did not liftover to BAM", site_tag, tp);
-                }
-            }
-        }
-    }
+    // No remapping needed; scoring consumes BAM-build coordinates against the projected tree
+    let snp_calls = snp_calls_bam;
 
     progress.set_message("Scoring haplogroups...");
 
-    // Score haplogroups with tree coordinates
+    // Score haplogroups with projected tree and BAM build id
     let mut scores = Vec::new();
     scoring::calculate_haplogroup_score(
-        &haplogroup_tree,
+        &projected_tree,
         &snp_calls,
         &mut scores,
         None,
         0,
-        tree_build_id,
+        build_id,
     );
 
-    let ordered_scores = collect_scored_paths(scores, &haplogroup_tree);
+    let ordered_scores = collect_scored_paths(scores, &projected_tree);
 
     // Optional debug dump of top haplogroups (env-gated)
     if std::env::var("DECODINGUS_DEBUG_SCORES").ok().as_deref() == Some("1") {
@@ -311,7 +181,7 @@ pub fn analyze_haplogroup(
     for result in ordered_scores {
         if show_snps {
             let (matching_snps, mismatching_snps, no_call_snps) =
-                get_snp_details(&result.name, &haplogroup_tree, &snp_calls, tree_build_id);
+                get_snp_details(&result.name, &projected_tree, &snp_calls, build_id);
             writeln!(
                 writer,
                 "{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",

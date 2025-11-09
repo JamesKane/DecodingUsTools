@@ -1,5 +1,5 @@
 use crate::cli;
-use crate::haplogroup::types::{Haplogroup, HaplogroupResult, LociType, Locus};
+use crate::haplogroup::types::{Haplogroup, HaplogroupResult, LociType, Locus, LociCoordinate};
 use crate::utils::cache::{TreeCache, TreeType};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
@@ -94,4 +94,68 @@ pub(crate) fn find_path_to_root(
     }
 
     None
+}
+
+use crate::types::ReferenceGenome;
+use crate::utils::liftover::Liftover;
+
+/// Project a haplogroup tree's SNP coordinates from `src_build` into `dst_genome` build.
+/// Adds/overwrites entries keyed by `dst_genome.name()` while preserving existing entries,
+/// and omits unmappable loci in the destination build.
+pub(crate) fn project_tree_to_build(
+    tree: &Haplogroup,
+    src_build: &str,
+    dst_genome: ReferenceGenome,
+    lifter: &Liftover,
+) -> Haplogroup {
+    fn project_locus(
+        locus: &Locus,
+        src_build: &str,
+        dst_build_id: &str,
+        lifter: &Liftover,
+    ) -> Locus {
+        let mut new_locus = locus.clone();
+        if let Some(coord) = locus.coordinates.get(src_build) {
+            // Only handle SNPs here; INDELs remain unmodified.
+            // Use the new atomic liftover API to map position + alleles with strand awareness.
+            if let Some(mapped) = lifter.map_snp_alleles(
+                &coord.chromosome,
+                coord.position,
+                &coord.ancestral,
+                &coord.derived,
+            ) {
+                let projected = LociCoordinate {
+                    position: mapped.position,
+                    chromosome: mapped.contig,
+                    ancestral: mapped.ancestral,
+                    derived: mapped.derived,
+                };
+                let mut coords = new_locus.coordinates.clone();
+                coords.insert(dst_build_id.to_string(), projected);
+                new_locus.coordinates = coords;
+            }
+        }
+        new_locus
+    }
+
+    let dst_build_id = dst_genome.name();
+
+    let mut projected = Haplogroup {
+        name: tree.name.clone(),
+        parent: tree.parent.clone(),
+        loci: tree
+            .loci
+            .iter()
+            .map(|l| project_locus(l, src_build, dst_build_id, lifter))
+            .collect(),
+        children: Vec::new(),
+    };
+
+    projected.children = tree
+        .children
+        .iter()
+        .map(|c| project_tree_to_build(c, src_build, dst_genome.clone(), lifter))
+        .collect();
+
+    projected
 }

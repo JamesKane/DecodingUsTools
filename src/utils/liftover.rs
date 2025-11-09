@@ -25,6 +25,15 @@ pub struct Liftover {
     intervals_by_query: HashMap<String, Vec<()>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MappedAllele {
+    pub contig: String,
+    pub position: u32,
+    pub ancestral: String,
+    pub derived: String,
+    pub was_reverse: bool,
+}
+
 impl Liftover {
     pub fn load_or_fetch(source: ReferenceGenome, target: ReferenceGenome) -> Result<Self, Box<dyn std::error::Error>> {
         if source == target {
@@ -223,14 +232,22 @@ impl Liftover {
     /// Returns (target_pos_1based, is_reverse_strand) or None if mapping fails.
     /// Use this when you need to know if alleles should be reverse complemented.
     pub fn map_pos_with_strand(&self, query_chrom: &str, query_pos_1based: u32) -> Option<(u32, bool)> {
+        // Kept for backward compatibility; delegates to the 3-tuple variant and drops contig
+        self.map_pos_with_strand_and_contig(query_chrom, query_pos_1based)
+            .map(|(p, r, _c)| (p, r))
+    }
+
+    /// Map a position and return target position, strand, and target contig name.
+    /// Returns (target_pos_1based, is_reverse_strand, target_contig) or None if mapping fails.
+    pub fn map_pos_with_strand_and_contig(&self, query_chrom: &str, query_pos_1based: u32) -> Option<(u32, bool, String)> {
         // Identity shortcut when no chains loaded
         if self.machine.is_none() {
-            return Some((query_pos_1based, false));
+            return Some((query_pos_1based, false, query_chrom.to_string()));
         }
         let machine = self.machine.as_ref().unwrap();
         let verbose = std::env::var("DECODINGUS_VERBOSE_LIFTOVER").ok().filter(|v| !v.is_empty() && v != "0").is_some();
 
-        let mut try_map = |chrom: &str| -> Option<(u32, bool)> {
+        let mut try_map = |chrom: &str| -> Option<(u32, bool, String)> {
             let start0 = (query_pos_1based as u64).saturating_sub(1);
             let end0 = start0 + 1;
             if verbose { 
@@ -269,10 +286,11 @@ impl Liftover {
                         if let Some((start_s, _end_s)) = parts[2].split_once('-') {
                             if let Ok(start0_tgt) = start_s.parse::<u64>() {
                                 let pos = (start0_tgt as u32).saturating_add(1);
+                                let tgt_contig = parts[0].to_string();
                                 if verbose {
-                                    eprintln!("[liftover]   mapped to pos {} (strand {})", pos, strand);
+                                    eprintln!("[liftover]   mapped to {}:{} (strand {})", tgt_contig, pos, strand);
                                 }
-                                return Some((pos, is_reverse));
+                                return Some((pos, is_reverse, tgt_contig));
                             }
                         }
                     }
@@ -321,6 +339,37 @@ impl Liftover {
             .collect()
     }
 
+    /// Map a SNP position with alleles in a single atomic call. Applies reverse-complement automatically
+    /// when the liftover indicates the target is on the reverse strand. Returns None if unmappable or
+    /// if inputs are not single-base SNP alleles.
+    pub fn map_snp_alleles(&self, query_contig: &str, position_1based: u32, ancestral: &str, derived: &str) -> Option<MappedAllele> {
+        // Validate as SNPs (single non-empty bases). We are permissive on actual alphabet; RC will be per-base.
+        if ancestral.is_empty() || derived.is_empty() { return None; }
+        if ancestral.chars().count() != 1 || derived.chars().count() != 1 { return None; }
+
+        let mapped = self.map_pos_with_strand_and_contig(query_contig, position_1based)?;
+        let (pos_tgt, is_rev, contig_tgt) = mapped;
+        let (anc_tgt, der_tgt) = if is_rev {
+            (Self::reverse_complement(ancestral), Self::reverse_complement(derived))
+        } else {
+            (ancestral.to_string(), derived.to_string())
+        };
+        Some(MappedAllele {
+            contig: contig_tgt,
+            position: pos_tgt,
+            ancestral: anc_tgt,
+            derived: der_tgt,
+            was_reverse: is_rev,
+        })
+    }
+
+    /// Batch-map many SNPs for a single contig. Each item is (position_1based, ancestral, derived).
+    pub fn map_many_snps_alleles(&self, query_contig: &str, items: &[(u32, String, String)]) -> Vec<Option<MappedAllele>> {
+        items.iter()
+            .map(|(pos, a, d)| self.map_snp_alleles(query_contig, *pos, a, d))
+            .collect()
+    }
+
     /// Batch-map many 1-based positions on a chromosome; preserves input order.
     pub fn map_many(&self, chrom: &str, positions_1based: &[u32]) -> Vec<Option<u32>> {
         positions_1based.iter().map(|p| self.map_pos(chrom, *p)).collect()
@@ -334,10 +383,6 @@ impl Liftover {
         }
         out
     }
-}
-
-fn chain_url_and_name(_source: &ReferenceGenome, _target: &ReferenceGenome) -> Option<(String, String)> { // legacy, unused
-    None
 }
 
 fn ucsc_dir_code(genome: &ReferenceGenome) -> &'static str {
