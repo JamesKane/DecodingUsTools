@@ -1,10 +1,37 @@
 use crate::haplogroup::types::{Haplogroup, HaplogroupResult, HaplogroupScore, LociType};
 use std::collections::{HashMap, HashSet};
+use anyhow::{bail, Result};
 
 const HIGH_QUALITY_THRESHOLD: f64 = 0.7;
 const MEDIUM_QUALITY_THRESHOLD: f64 = 0.5;
 // Respect caller-level min depth by keeping scoring permissive; caller already filters by depth.
 const MIN_DEPTH: u32 = 1;
+
+// --- Debug helpers ---
+// Diagnostics for INDEL-only branches (e.g., DF13 -> Z39589/FGC11134 split):
+// - Set DECODINGUS_DEBUG_SCORES=1 to enable debug output.
+// - Optionally set DECODINGUS_DEBUG_NODE to a substring of the haplogroup name to narrow logs
+//   (default if unset is to match "Z39589").
+// - Optionally set DECODINGUS_DEBUG_CHILD_LOCI=1 to print per-locus details for the
+//   immediate children of an INDEL-only node.
+//
+// Acceptance criteria: when a node has 0 SNP loci (bm.total == 0) and matches the filter,
+// we print a header and one-line summaries for each immediate child including metrics and
+// raw/adjusted scores, without affecting scoring behavior.
+fn debug_scores_enabled() -> bool {
+    std::env::var("DECODINGUS_DEBUG_SCORES").ok().as_deref() == Some("1")
+}
+
+fn matches_debug_node(name: &str) -> bool {
+    match std::env::var("DECODINGUS_DEBUG_NODE").ok() {
+        Some(filter) if !filter.is_empty() => name.contains(&filter),
+        _ => name.contains("Z39589"), // default narrow target if unset
+    }
+}
+
+fn child_loci_debug_enabled() -> bool {
+    std::env::var("DECODINGUS_DEBUG_CHILD_LOCI").ok().as_deref() == Some("1")
+}
 
 #[derive(Clone, Debug, Default)]
 struct BranchMetrics {
@@ -22,6 +49,7 @@ fn compute_branch_metrics(
     snp_calls: &HashMap<u32, (char, u32, f64)>,
     build_id: &str,
     depth: u32,
+    debug_per_locus: bool,
 ) -> BranchMetrics {
     let defining_loci: Vec<_> = haplogroup
         .loci
@@ -30,93 +58,108 @@ fn compute_branch_metrics(
         .collect();
 
     let mut bm = BranchMetrics::default();
-    
-    // Enable debug for P312 specifically
-    let debug = std::env::var("DECODINGUS_DEBUG_SCORES").ok().as_deref() == Some("1") 
-        && haplogroup.name.contains("P312");
 
-    for locus in &defining_loci {
+    // Debug gating:
+    // - When debug_per_locus=true, always emit per-locus lines (caller already gated by env vars and node match)
+    // - Otherwise, only emit for a small set of key tags if DECODINGUS_DEBUG_SCORES=1
+    let debug_names = ["P312", "DF13", "FGC11134", "Z39589", "FGC29071"]; 
+    let debug_scores = debug_scores_enabled();
+    let debug = debug_per_locus || (debug_scores && debug_names.iter().any(|tag| haplogroup.name.contains(tag)));
+
+    bm.total = defining_loci.len() as u32;
+
+    // Iterate loci and tally metrics from snp_calls
+    for locus in defining_loci {
         if let Some(coord) = locus.coordinates.get(build_id) {
-            if debug {
-                // Always print position being checked for P312
-                eprintln!(
-                    "[scoring.debug] {} locus={} checking position={} (chrom={})",
-                    haplogroup.name, locus.name, coord.position, coord.chromosome
-                );
-            }
-            
-            if let Some((called_base, depth_call, freq)) = snp_calls.get(&coord.position) {
-                if debug {
-                    eprintln!(
-                        "[scoring.debug] {} locus={} pos={} called_base='{}' depth={} freq={:.3}",
-                        haplogroup.name, locus.name, coord.position, called_base, depth_call, freq
-                    );
-                    eprintln!(
-                        "[scoring.debug]   coord.derived='{}' coord.ancestral='{}'",
-                        coord.derived, coord.ancestral
-                    );
-                }
-                
-                if *depth_call >= MIN_DEPTH {
-                    let maybe_derived = coord.derived.chars().next();
-                    let maybe_ancestral = coord.ancestral.chars().next();
-                    
+            let pos = coord.position;
+            match snp_calls.get(&pos) {
+                None => {
+                    bm.no_calls += 1;
                     if debug {
-                        eprintln!(
-                            "[scoring.debug]   derived_char={:?} ancestral_char={:?}",
-                            maybe_derived, maybe_ancestral
-                        );
+                        if debug_per_locus {
+                            eprintln!(
+                                "[debug.loc] {:<8} pos={} no_call",
+                                locus.name,
+                                pos
+                            );
+                        }
                     }
-                    
-                    if let (Some(derived_base), Some(ancestral_base)) = (maybe_derived, maybe_ancestral) {
-                        if *called_base == derived_base {
-                            if *freq >= HIGH_QUALITY_THRESHOLD && *depth_call >= 1 {
-                                bm.derived += 1;
-                                if debug { eprintln!("[scoring.debug]   -> counted as DERIVED (high qual)"); }
-                            } else if *freq >= MEDIUM_QUALITY_THRESHOLD && *depth_call >= 1 {
-                                bm.derived += 1;
-                                if debug { eprintln!("[scoring.debug]   -> counted as DERIVED (medium qual)"); }
-                            } else {
-                                bm.low_quality += 1;
-                                if debug { eprintln!("[scoring.debug]   -> counted as LOW_QUALITY"); }
-                            }
-                        } else if *called_base == ancestral_base {
-                            if *freq >= HIGH_QUALITY_THRESHOLD && *depth_call >= 1 {
-                                bm.ancestral += 1;
-                                if debug { eprintln!("[scoring.debug]   -> counted as ANCESTRAL"); }
-                            } else {
-                                bm.low_quality += 1;
-                                if debug { eprintln!("[scoring.debug]   -> counted as LOW_QUALITY (anc, low qual)"); }
-                            }
-                        } else {
-                            // true conflict: called base is neither ancestral nor derived
-                            bm.conflicts += 1;
-                            if debug {
-                                eprintln!(
-                                    "[scoring.debug]   -> CONFLICT: called '{}' != derived '{}' != ancestral '{}'",
-                                    called_base, derived_base, ancestral_base
-                                );
-                            }
+                }
+                Some((call_base, depth_called, freq)) => {
+                    if *depth_called < MIN_DEPTH {
+                        bm.no_calls += 1;
+                        if debug && debug_per_locus {
+                            eprintln!(
+                                "[debug.loc] {:<8} pos={} depth={} < MIN_DEPTH no_call",
+                                locus.name,
+                                pos,
+                                depth_called
+                            );
+                        }
+                        continue;
+                    }
+
+                    // Do not early-exit on medium frequency; classify allele first and mark low quality afterwards
+
+                    // Compare against expected alleles
+                    let der = coord.derived.as_bytes().get(0).map(|b| (*b as char).to_ascii_uppercase());
+                    let anc = coord.ancestral.as_bytes().get(0).map(|b| (*b as char).to_ascii_uppercase());
+                    let base = call_base.to_ascii_uppercase();
+
+                    if Some(base) == der {
+                        bm.derived += 1;
+                        // downgrade to low_quality bucket if not high confidence
+                        if *freq < HIGH_QUALITY_THRESHOLD {
+                            bm.low_quality += 1;
+                        }
+                        if debug && debug_per_locus {
+                            eprintln!(
+                                "[debug.loc] {:<8} pos={} base={} depth={} freq={:.3} DER",
+                                locus.name,
+                                pos,
+                                call_base,
+                                depth_called,
+                                freq
+                            );
+                        }
+                    } else if Some(base) == anc {
+                        bm.ancestral += 1;
+                        if *freq < HIGH_QUALITY_THRESHOLD {
+                            bm.low_quality += 1;
+                        }
+                        if debug && debug_per_locus {
+                            eprintln!(
+                                "[debug.loc] {:<8} pos={} base={} depth={} freq={:.3} ANC",
+                                locus.name,
+                                pos,
+                                call_base,
+                                depth_called,
+                                freq
+                            );
                         }
                     } else {
-                        bm.no_calls += 1;
-                        if debug { eprintln!("[scoring.debug]   -> NO_CALL (missing derived/ancestral in coord)"); }
+                        bm.conflicts += 1;
+                        // mark as low quality if not high confidence
+                        if *freq < HIGH_QUALITY_THRESHOLD {
+                            bm.low_quality += 1;
+                        }
+                        if debug && debug_per_locus {
+                            eprintln!(
+                                "[debug.loc] {:<8} pos={} base={} depth={} freq={:.3} CONFLICT anc='{}' der='{}'",
+                                locus.name,
+                                pos,
+                                call_base,
+                                depth_called,
+                                freq,
+                                coord.ancestral,
+                                coord.derived
+                            );
+                        }
                     }
-                } else {
-                    bm.no_calls += 1;
-                    if debug { eprintln!("[scoring.debug]   -> NO_CALL (depth < MIN_DEPTH)"); }
-                }
-            } else {
-                bm.no_calls += 1;
-                if debug { 
-                    eprintln!("[scoring.debug] {} locus={} pos={} -> NO_CALL (no snp_call at this position)", 
-                              haplogroup.name, locus.name, coord.position); 
                 }
             }
         }
     }
-
-    bm.total = defining_loci.len() as u32;
 
     // Base score (pre-experimental multipliers). Keep aligned with legacy branch calc below.
     let callable = bm.derived + bm.ancestral + bm.low_quality;
@@ -183,7 +226,7 @@ fn experimental_calculate(
     }
 
     // Compute branch metrics and adjusted score for current node
-    let bm = compute_branch_metrics(haplogroup, snp_calls, build_id, depth);
+    let bm = compute_branch_metrics(haplogroup, snp_calls, build_id, depth, false);
     let mut adjusted_branch = bm.raw_branch_score;
     // Stronger ancestral penalty and singleton guard at shallow nodes
     if bm.total > 4 && bm.ancestral as u32 >= ((bm.total + 1) / 2) {
@@ -245,7 +288,10 @@ fn experimental_calculate(
     // Precompute child metrics to derive sibling bonuses
     let mut child_metrics: Vec<(&Haplogroup, BranchMetrics)> = Vec::new();
     for child in &haplogroup.children {
-        let cbm = compute_branch_metrics(child, snp_calls, build_id, depth + 1);
+        if child.name == haplogroup.name {
+            panic!("Invalid haplogroup tree state: Child node '{}' has same name as its parent", child.name);
+        }
+        let cbm = compute_branch_metrics(child, snp_calls, build_id, depth + 1, false);
         child_metrics.push((child, cbm));
     }
 
@@ -262,14 +308,37 @@ fn experimental_calculate(
 
     // Optional debug at key splits
     let debug = std::env::var("DECODINGUS_DEBUG_SCORES").ok().as_deref() == Some("1");
-    let is_key_split = haplogroup.name.contains("IJK")
-        || haplogroup.name.starts_with("K-")
-        || haplogroup.name == "K"
-        || haplogroup.name.contains("K-M9")
-        || haplogroup.name.contains("R-L151");
+    let is_key_split = haplogroup.name == "R-L21"
+        || haplogroup.name == "R-DF13"
+        || haplogroup.name == "R-FGC11134"
+        || haplogroup.name == "R-Z39589";
     if debug && is_key_split {
         eprintln!("[debug] Split at {} (depth {}):", haplogroup.name, depth);
         eprintln!("[debug]   parent bm: der={} anc={} noc={} lowq={} total={} raw={:.4} adj={:.4}", bm.derived, bm.ancestral, bm.no_calls, bm.low_quality, bm.total, bm.raw_branch_score, adjusted_branch);
+
+        // Optional tree view of immediate children names
+        if std::env::var("DECODINGUS_DEBUG_TREE").ok().as_deref() == Some("1") {
+            let child_names: Vec<String> = haplogroup.children.iter().map(|c| c.name.clone()).collect();
+            eprintln!("[debug.tree] immediate children: [{}]", child_names.join(", "));
+        }
+
+        // Immediate child branch-local metrics (pre-recursion)
+        for (child, cbm) in child_metrics.iter() {
+            let mut child_adj = cbm.raw_branch_score;
+            if cbm.total > 4 && cbm.ancestral as u32 >= ((cbm.total + 1) / 2) { child_adj *= dampen_majority_anc; }
+            if cbm.total > 5 && cbm.derived == 1 { child_adj *= singleton_downweight; }
+            eprintln!(
+                "[debug]   immediate child {:<20} der={} anc={} noc={} lowq={} total={} raw={:.4} adj={:.4}",
+                child.name,
+                cbm.derived,
+                cbm.ancestral,
+                cbm.no_calls,
+                cbm.low_quality,
+                cbm.total,
+                cbm.raw_branch_score,
+                child_adj
+            );
+        }
     }
 
     for (idx, (child, cbm)) in child_metrics.iter().enumerate() {
@@ -281,6 +350,45 @@ fn experimental_calculate(
         let sibling_bonus = 1.0 + bonus_budget * soft;
         let clear_local = (cbm.derived > cbm.ancestral && cbm.derived >= 2) || (cbm.derived >= 1 && cbm.ancestral == 0);
         let coh = if clear_local && !parent_all_ancestral { coherence_bonus } else { 1.0 };
+
+        // Pruning rule: do not descend into a child that shows no derived evidence,
+        // and whose immediate children (if any) also show no derived evidence while
+        // showing ancestral calls. This prevents walking down the wrong sibling when
+        // another sibling (e.g., FGC11134) has the only derived support.
+        let mut prune_child = false;
+        if cbm.total > 0 {
+            // Child has SNP loci but none derived and at least one ancestral → prune
+            if cbm.derived == 0 && cbm.ancestral > 0 {
+                prune_child = true;
+            }
+        } else {
+            // INDEL-only child: look at immediate grandchildren metrics
+            if !child.children.is_empty() {
+                let mut any_gc_with_loci = false;
+                let mut all_gc_no_derived = true;
+                let mut any_gc_ancestral = false;
+                for gc in &child.children {
+                    let gcbm = compute_branch_metrics(gc, snp_calls, build_id, depth + 2, false);
+                    if gcbm.total > 0 {
+                        any_gc_with_loci = true;
+                        if gcbm.derived > 0 { all_gc_no_derived = false; }
+                        if gcbm.ancestral > 0 { any_gc_ancestral = true; }
+                    }
+                }
+                if any_gc_with_loci && all_gc_no_derived && any_gc_ancestral {
+                    prune_child = true;
+                }
+            }
+        }
+        if prune_child {
+            if debug && is_key_split {
+                eprintln!(
+                    "[debug]   pruning descent into {:<20} (der={} anc={} total={})",
+                    child.name, cbm.derived, cbm.ancestral, cbm.total
+                );
+            }
+            continue;
+        }
 
         // Recurse down the child to get its cumulative score
         let (child_score, child_cumulative) = experimental_calculate(
@@ -301,28 +409,22 @@ fn experimental_calculate(
 
         if debug && is_key_split {
             eprintln!(
-                "[debug]   child {:<20} der={} anc={} noc={} total={} raw={:.4} adj={:.4} soft={:.3} sib_bonus={:.3} coh={:.3} final_child={:.4}",
+                "[debug]   subtree via {:<20} final={:.4} matches={} total_snps={} depth={}",
                 child.name,
-                cbm.derived,
-                cbm.ancestral,
-                cbm.no_calls,
-                cbm.total,
-                cbm.raw_branch_score,
-                child_adj,
-                soft,
-                sibling_bonus,
-                coh,
-                child_score.score * sibling_bonus * coh
+                child_score.score * sibling_bonus * coh,
+                child_score.matches,
+                child_score.total_snps,
+                depth + 1
             );
         }
 
-        // Push cumulative result for this child
+        // Push cumulative result for this child (use child-side metrics for conflicts/lowq)
         scores.push(HaplogroupResult {
             name: child.name.clone(),
             score: combined_score,
             matching_snps: combined_matches as u32,
-            mismatching_snps: bm.conflicts,
-            low_quality_snps: bm.low_quality,
+            mismatching_snps: cbm.conflicts,
+            low_quality_snps: cbm.low_quality,
             ancestral_matches: combined_ancestral as u32,
             no_calls: combined_no_calls as u32,
             total_snps: combined_total as u32,

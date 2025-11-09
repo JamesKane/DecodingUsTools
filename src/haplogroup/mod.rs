@@ -183,7 +183,10 @@ pub fn analyze_haplogroup(
         build_id,
     );
 
-    let ordered_scores = collect_scored_paths(scores, &projected_tree);
+    let mut ordered_scores = collect_scored_paths(scores, &projected_tree);
+    // Post-process: filter zero-score artifacts and sort by depth descending (leaf to root)
+    ordered_scores.retain(|r| r.score > 0.0);
+    ordered_scores.sort_by(|a, b| b.depth.cmp(&a.depth).then_with(|| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)));
 
     // Optional debug dump of top haplogroups (env-gated)
     if std::env::var("DECODINGUS_DEBUG_SCORES").ok().as_deref() == Some("1") {
@@ -473,14 +476,17 @@ fn collect_scored_paths(scores: Vec<HaplogroupResult>, tree: &Haplogroup) -> Vec
         let mut best_child_leaf: Option<HaplogroupResult> = None;
         for child in &node.children {
             let child_entry = map.get(&child.name);
-            let (cd, ca, _ct) = child_entry.map(|r| (r.matching_snps as i32, r.ancestral_matches as i32, r.total_snps as i32)).unwrap_or((0, 0, 0));
-            // New rule: allow descent when strictly more derived than ancestral at the child
-            let clear_derived_here = cd > ca;
+            let (cd, ca, ct) = child_entry.map(|r| (r.matching_snps as i32, r.ancestral_matches as i32, r.total_snps as i32)).unwrap_or((0, 0, 0));
+            // Revised rule: allow descent when there is sufficient non-trivial derived support and not worse than ancestral.
+            // This helps nodes with mixed evidence (e.g., 3 derived / 3 ancestral) proceed over siblings defined by INDELs.
+            let clear_derived_here = (cd >= 2 && cd >= ca) || (cd >= 1 && ca == 0);
+            // Hard gate: do not consider children that have zero SNP loci (e.g., INDEL-only definitions)
+            let has_snp_loci = ct > 0;
             // Determine candidate leaves limited to ONE extra level below this child (grandchildren that are leaves), or the child if it is a leaf
             let mut best_leaf: Option<HaplogroupResult> = None;
             let mut any_downstream_derived = false;
-            // Include the child itself if it is a leaf
-            if child.children.is_empty() {
+            // Include the child itself if it is a leaf and has SNP loci
+            if child.children.is_empty() && has_snp_loci {
                 if let Some(entry) = map.get(&child.name) {
                     any_downstream_derived = any_downstream_derived || entry.matching_snps > 0;
                     best_leaf = Some(entry.clone());
