@@ -29,6 +29,39 @@ fn liftover_m526_grch38_to_chm13v2() {
 
 #[test]
 #[ignore]
+fn liftover_p312_grch38_to_chm13v2() {
+    let lo = Liftover::load_or_fetch(ReferenceGenome::GRCh38, ReferenceGenome::CHM13v2)
+        .expect("load liftover GRCh38->CHM13v2");
+
+    // P312: GRCh38 chrY:19995425 [C>A] -> CHM13v2 chrY:20901962 [C>A]
+    let mapped = lo.map_pos("chrY", 19_995_425);
+    assert!(mapped.is_some(), "P312 position did not liftover");
+    let mapped_pos = mapped.unwrap();
+    eprintln!("P312: GRCh38 chrY:19995425 -> CHM13v2 chrY:{}", mapped_pos);
+    assert_eq!(mapped_pos, 20_901_962, "Expected CHM13v2 chrY:20901962 for P312");
+
+    // Also test with strand information
+    let mapped_strand = lo.map_pos_with_strand("chrY", 19_995_425);
+    assert!(mapped_strand.is_some(), "P312 position with strand did not liftover");
+    let (pos, is_reverse) = mapped_strand.unwrap();
+    eprintln!("P312: GRCh38 chrY:19995425 -> CHM13v2 chrY:{} (reverse={})", pos, is_reverse);
+    assert_eq!(pos, 20_901_962, "Expected CHM13v2 chrY:20901962 for P312");
+    assert!(!is_reverse, "P312 should not be on reverse strand");
+
+    // Test allele mapping using map_snp_alleles
+    let mapped_alleles = lo.map_snp_alleles("chrY", 19_995_425, "C", "A");
+    assert!(mapped_alleles.is_some(), "P312 alleles did not map");
+    let alleles = mapped_alleles.unwrap();
+    eprintln!("P312: Mapped alleles -> {}:{} [{}>{} ] (reverse={})",
+              alleles.contig, alleles.position, alleles.ancestral, alleles.derived, alleles.was_reverse);
+    assert_eq!(alleles.position, 20_901_962, "P312 alleles position mismatch");
+    assert_eq!(alleles.ancestral, "C", "P312 ancestral allele should remain C");
+    assert_eq!(alleles.derived, "A", "P312 derived allele should remain A");
+    assert!(!alleles.was_reverse, "P312 should not be reverse complemented");
+}
+
+#[test]
+#[ignore]
 fn liftover_l21_grch38_to_chm13v2_and_back() {
     // Forward: GRCh38 -> CHM13v2
     let lo_fwd = Liftover::load_or_fetch(ReferenceGenome::GRCh38, ReferenceGenome::CHM13v2)
